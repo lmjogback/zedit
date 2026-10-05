@@ -1,6 +1,6 @@
 [project]
 name = "zedit"
-version = "0.1.0"
+version = "1.0.0"
 description = "Edit a dynamic DNS zone like a zone file: AXFR, $EDITOR, semantic diff, atomic nsupdate with three-way rebase"
 readme = "README.md"
 license = "MIT"
@@ -11,6 +11,7 @@ dependencies = [
 ]
 keywords = ["dns", "nsupdate", "rfc2136", "bind", "axfr", "dnssec"]
 classifiers = [
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Operating System :: POSIX",

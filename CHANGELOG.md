@@ -1,0 +1,24 @@
+# Changelog
+
+## 1.0.0 - 2026-10-05
+
+First stable release.
+
+- Edit a dynamic zone as a zone file: AXFR with TSIG, `$EDITOR`, semantic diff,
+  one atomic `nsupdate`.
+- DNSSEC and server-maintained records (RRSIG, NSEC, NSEC3, NSEC3PARAM, DNSKEY,
+  CDS, CDNSKEY, ZONEMD, TYPE65534) are filtered out and never touched;
+  `-a`/`--show-all` shows them as read-only `;ro` comment lines, `--no-rrsig`
+  leaves out RRSIG, NSEC and NSEC3.
+- Editable SOA fields (RNAME, REFRESH, RETRY, EXPIRE, MINIMUM), explained in
+  comments below the SOA record; the serial is bumped automatically.
+- Optimistic locking with value-dependent prerequisites on exactly the RRsets
+  an update touches, so concurrent DHCP/DDNS updates elsewhere don't conflict.
+- Verification by a fresh AXFR after every update, reporting changes the
+  server silently dropped (exit status 3).
+- Three-way rebase onto the current zone on conflicts or timeouts; sessions
+  are saved and can be resumed with `--resume`.
+- Works with unsigned zones and DNSSEC-signed zones (in-place and
+  inline-signing), with every `serial-update-method`.
+- Defaults: server from the zone's SOA MNAME; key from `$ZEDIT_KEYFILE`,
+  `~/.config/zedit/keys/ZONE.key` or `~/.config/zedit/default.key`.
