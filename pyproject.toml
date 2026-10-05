@@ -1,0 +1,47 @@
+[project]
+name = "zedit"
+version = "0.1.0"
+description = "Edit a dynamic DNS zone like a zone file: AXFR, $EDITOR, semantic diff, atomic nsupdate with three-way rebase"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = [
+    "dnspython>=2.4",
+]
+keywords = ["dns", "nsupdate", "rfc2136", "bind", "axfr", "dnssec"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Topic :: Internet :: Name Service (DNS)",
+]
+
+[project.scripts]
+zedit = "zedit.cli:main"
+
+[project.urls]
+Repository = "https://github.com/lmjogback/zedit"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires named, nsupdate and tsig-keygen (BIND 9)"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = []

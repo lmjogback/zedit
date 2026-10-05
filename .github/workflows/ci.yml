@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install BIND for integration tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bind9 bind9-dnsutils
+          # The Ubuntu AppArmor profile blocks named from reading test files in /tmp
+          sudo ln -sf /etc/apparmor.d/usr.sbin.named /etc/apparmor.d/disable/ || true
+          sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.named || true
+          sudo systemctl stop named || true
+      - run: uv run pytest -v
