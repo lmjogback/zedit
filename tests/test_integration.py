@@ -1,5 +1,7 @@
 """Run zedit against a real named. Skipped if BIND is not installed."""
 
+import contextlib
+import datetime
 import os
 import shutil
 import socket
@@ -40,8 +42,9 @@ def axfr(port, key):
     return dig(port, key, ZONE, "AXFR")
 
 
-@pytest.fixture(params=list(SIGNING))
-def server(request, tmp_path):
+@contextlib.contextmanager
+def run_named(tmp_path, signing, serial_update_method=None):
+    """Start named with ZONE configured as requested; yield (port, key, tmp_path)."""
     port = free_port()
     key = tmp_path / "admin.key"
     key.write_text(subprocess.check_output(["tsig-keygen", "-a", "hmac-sha256", "admin"], text=True))
@@ -50,12 +53,13 @@ def server(request, tmp_path):
         "$TTL 300\n@ 3600 IN SOA ns1 hostmaster 100 7200 900 1209600 300\n"
         "@ IN NS ns1\nns1 IN A 192.0.2.1\nwww IN A 192.0.2.10\nmail IN A 192.0.2.20\n"
     )
+    method = f"serial-update-method {serial_update_method};" if serial_update_method else ""
     (tmp_path / "named.conf").write_text(f"""
 include "{key}";
 options {{ directory "{tmp_path}"; key-directory "{tmp_path}/keys";
   listen-on port {port} {{ 127.0.0.1; }}; listen-on-v6 {{ none; }};
   pid-file "{tmp_path}/named.pid"; recursion no; dnssec-validation no; }};
-zone "{ZONE}" {{ type primary; file "{tmp_path}/db.example"; {SIGNING[request.param]}
+zone "{ZONE}" {{ type primary; file "{tmp_path}/db.example"; {SIGNING[signing]} {method}
   allow-transfer {{ key admin; }}; update-policy {{ grant admin zonesub ANY; }}; }};
 """)
     for p in (tmp_path, tmp_path / "keys"):
@@ -65,20 +69,27 @@ zone "{ZONE}" {{ type primary; file "{tmp_path}/db.example"; {SIGNING[request.pa
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
-    for _ in range(100):
-        try:
-            zone = axfr(port, key)
-            if request.param == "unsigned" or any(" DNSKEY " in rr for rr in zone):
-                break
-        except subprocess.CalledProcessError:
-            pass
-        time.sleep(0.1)
-    else:
-        proc.kill()
-        pytest.skip("named did not start or did not sign the zone")
-    yield port, key, tmp_path
-    proc.terminate()
-    proc.wait(timeout=10)
+    try:
+        for _ in range(100):
+            try:
+                zone = axfr(port, key)
+                if signing == "unsigned" or any(" DNSKEY " in rr for rr in zone):
+                    break
+            except subprocess.CalledProcessError:
+                pass
+            time.sleep(0.1)
+        else:
+            pytest.skip("named did not start or did not sign the zone")
+        yield port, key, tmp_path
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+@pytest.fixture(params=list(SIGNING))
+def server(request, tmp_path):
+    with run_named(tmp_path, request.param) as s:
+        yield s
 
 
 def run_zedit(port, key, tmp_path, editor, answers, *extra):
@@ -177,3 +188,40 @@ def test_silently_ignored_update_is_reported(server):
     r = run_zedit(port, key, tmp, ed, "y\n")
     assert r.returncode == 3, r.stdout + r.stderr
     assert "foo A" in r.stderr
+
+
+def soa(port, key):
+    (rr,) = dig(port, key, ZONE, "SOA")
+    serial, refresh = rr.split()[6:8]
+    return int(serial), int(refresh)
+
+
+def serial_greater(new, old):
+    """RFC 1982: new is greater than old."""
+    return 0 < (new - old) % 2**32 < 2**31
+
+
+@pytest.mark.parametrize("signing", ["unsigned", "inline"])
+@pytest.mark.parametrize("method", ["increment", "unixtime", "date"])
+def test_serial_update_methods(tmp_path, method, signing):
+    """Record and SOA edits work regardless of serial-update-method: record edits
+    leave the serial to BIND, SOA edits carry max(transferred, live) + 1."""
+    with run_named(tmp_path, signing, method) as (port, key, tmp):
+        s0, _ = soa(port, key)
+
+        r = run_zedit(port, key, tmp, write_editor(tmp, "sed -i 's/192.0.2.10/192.0.2.11/' \"$1\"\n"), "y\n")
+        assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+        s1, _ = soa(port, key)
+        assert serial_greater(s1, s0)
+        # Record edits don't touch the SOA: the serial follows BIND's method.
+        if method == "unixtime":
+            assert abs(s1 - time.time()) < 3600
+        elif method == "date":
+            days = {datetime.date.today(), datetime.datetime.now(datetime.timezone.utc).date()}
+            assert s1 // 100 in {int(d.strftime("%Y%m%d")) for d in days}
+
+        r = run_zedit(port, key, tmp, write_editor(tmp, "sed -i 's/ 7200 900 / 3600 900 /' \"$1\"\n"), "y\n")
+        assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+        s2, refresh = soa(port, key)
+        assert refresh == 3600
+        assert serial_greater(s2, s1)
