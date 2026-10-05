@@ -115,7 +115,22 @@ deleting them has no effect. `--no-rrsig` keeps the interesting ones (DNSKEY, CD
 CDNSKEY, NSEC3PARAM, TYPE65534) and drops the bulky ones.
 
 **SOA.** RNAME, REFRESH, RETRY, EXPIRE and MINIMUM are editable. MNAME, SERIAL and
-the SOA record's own TTL are locked. When the SOA changes, the update carries
+the SOA record's own TTL are locked. Below the SOA record, comment lines explain
+each value as transferred:
+
+```
+@      60 IN SOA    ns1.example.net. hostmaster.example.net. 2026100526 300 120 21600 60
+; SOA values as transferred (these comments are not updated when you edit):
+;   MNAME   = ns1.example.net.         primary name server (locked)
+;   RNAME   = hostmaster.example.net.  contact: hostmaster@example.net
+;   SERIAL  = 2026100526               locked; bumped automatically
+;   REFRESH = 300                      (5 minutes) how often secondaries check for changes
+;   RETRY   = 120                      (2 minutes) retry interval after a failed refresh
+;   EXPIRE  = 21600                    (6 hours) secondaries stop answering after this long
+;   MINIMUM = 60                       (1 minute) TTL of negative answers, RFC 2308
+;   TTL     = 60                       (1 minute) TTL of the SOA record itself (locked)
+```
+ When the SOA changes, the update carries
 `max(transferred, live) + 1` in RFC 1982 arithmetic, read from the server at the
 moment of sending, since RFC 2136 §3.4.2.2 silently ignores an SOA whose serial
 isn't greater.

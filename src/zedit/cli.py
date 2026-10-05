@@ -197,6 +197,49 @@ def rr_lines(m, origin, pad=0, notes=None, hidden=None):
     return out
 
 
+DURATION_UNITS = (("week", 604800), ("day", 86400), ("hour", 3600), ("minute", 60), ("second", 1))
+
+
+def human_duration(seconds):
+    """86401 -> '1 day and 1 second', 1209600 -> '2 weeks'."""
+    parts = []
+    for unit, size in DURATION_UNITS:
+        n, seconds = divmod(seconds, size)
+        if n:
+            parts.append(f"{n} {unit}{'' if n == 1 else 's'}")
+    if not parts:
+        return "0 seconds"
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def rname_to_email(rname, origin):
+    """SOA RNAME as a mail address: the first label is the local part
+    (it may contain escaped dots, e.g. john\\.doe.example.com.)."""
+    name = rname.derelativize(origin)
+    local = name.labels[0].decode(errors="replace")
+    return f"{local}@{dns.name.Name(name.labels[1:]).to_text(omit_final_dot=True)}"
+
+
+def soa_help(rds, origin):
+    """Comment lines explaining the SOA values as transferred."""
+    r = rds[0]
+    rows = [
+        ("MNAME", r.mname.derelativize(origin).to_text(), "primary name server (locked)"),
+        ("RNAME", r.rname.derelativize(origin).to_text(), f"contact: {rname_to_email(r.rname, origin)}"),
+        ("SERIAL", str(r.serial), "locked; bumped automatically"),
+        ("REFRESH", str(r.refresh), f"({human_duration(r.refresh)}) how often secondaries check for changes"),
+        ("RETRY", str(r.retry), f"({human_duration(r.retry)}) retry interval after a failed refresh"),
+        ("EXPIRE", str(r.expire), f"({human_duration(r.expire)}) secondaries stop answering after this long"),
+        ("MINIMUM", str(r.minimum), f"({human_duration(r.minimum)}) TTL of negative answers, RFC 2308"),
+        ("TTL", str(rds.ttl), f"({human_duration(rds.ttl)}) TTL of the SOA record itself (locked)"),
+    ]
+    width = max(len(v) for _, v, _ in rows)
+    return [
+        "; SOA values as transferred (these comments are not updated when you edit):",
+        *(f";   {f:<7} = {v:<{width}}  {t}" for f, v, t in rows),
+    ]
+
+
 def soa_line(rds, origin, pad=0):
     txt = rds[0].to_text(origin=origin, relativize=True)
     if pad:
@@ -216,8 +259,6 @@ def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=Non
         ]
     hdr = [
         f"; Zone: {origin}  Server: {server}  Serial: {soa_rds[0].serial}",
-        "; SOA: RNAME, REFRESH, RETRY, EXPIRE and MINIMUM may be edited;",
-        ";      MNAME, SERIAL and the SOA record TTL are locked (serial is bumped automatically).",
         *filtered,
         "; Records without a TTL get $TTL below (= SOA MINIMUM at transfer time).",
         *extra,
@@ -226,6 +267,7 @@ def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=Non
         "",
         *notes.get("SOA", []),
         soa_line(soa_rds, origin, pad),
+        *soa_help(soa_rds, origin),
         "",
     ]
     return "\n".join(hdr + rr_lines(model, origin, pad, notes, hidden)) + "\n"

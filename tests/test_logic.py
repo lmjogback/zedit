@@ -201,3 +201,34 @@ def test_primary_from_mname(monkeypatch):
     _, soa, _ = model("", soa="@ 3600 IN SOA ns1.example.net. hm 1 2 3 4 5\n")
     monkeypatch.setattr(cli.dns.resolver, "resolve", lambda *a, **kw: soa)
     assert cli.primary_from_mname(ORIGIN) == "ns1.example.net."
+
+
+@pytest.mark.parametrize(
+    "seconds, text",
+    [
+        (0, "0 seconds"),
+        (1, "1 second"),
+        (60, "1 minute"),
+        (86400, "1 day"),
+        (86401, "1 day and 1 second"),
+        (90061, "1 day, 1 hour, 1 minute and 1 second"),
+        (1209600, "2 weeks"),
+    ],
+)
+def test_human_duration(seconds, text):
+    assert cli.human_duration(seconds) == text
+
+
+def test_rname_to_email():
+    assert cli.rname_to_email(dns.name.from_text("hostmaster", None), ORIGIN) == "hostmaster@example.com"
+    assert cli.rname_to_email(dns.name.from_text(r"john\.doe.example.net."), ORIGIN) == "john.doe@example.net"
+
+
+def test_soa_help_is_comment_only():
+    m, soa, _ = model("www A 192.0.2.1\n", soa="@ 3600 IN SOA ns1 hostmaster 100 86401 900 1209600 300\n")
+    text = cli.render_file(soa, m, ORIGIN, "x")
+    assert ";   REFRESH = 86401" in text and "(1 day and 1 second)" in text
+    assert ";   EXPIRE  = 1209600" in text and "(2 weeks)" in text
+    assert "contact: hostmaster@example.com" in text
+    m2, soa2 = cli.parse_text(text, ORIGIN)
+    assert soa2[0] == soa[0] and set(m2) == set(m)
