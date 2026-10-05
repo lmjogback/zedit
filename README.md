@@ -47,16 +47,37 @@ uvx --from git+https://github.com/lmjogback/zedit zedit --help
 ## Usage
 
 ```
-zedit [-s SERVER] [-p PORT] [-k KEYFILE] [-n] [-r FILE] zone
+zedit [-s SERVER] [-p PORT] [-k KEYFILE] [-a] [--no-rrsig] [-n] [-r FILE] zone
 ```
 
 | Option | |
 |---|---|
-| `-s`, `--server` | Primary to transfer from and update (default `127.0.0.1`) |
+| `-s`, `--server` | Primary to transfer from and update (default: the zone's SOA MNAME, looked up with the system resolver) |
 | `-p`, `--port` | Port (default 53) |
-| `-k`, `--keyfile` | TSIG key in `tsig-keygen` / `named.conf` format, used for both AXFR and UPDATE |
+| `-k`, `--keyfile` | TSIG key in `tsig-keygen` / `named.conf` format, used for both AXFR and UPDATE (default: see below) |
+| `-a`, `--show-all` | Also show DNSSEC and server-maintained records, as read-only `;ro` comment lines |
+| `--no-rrsig` | With `--show-all`, leave out RRSIG, NSEC and NSEC3 (implies `-a`) |
 | `-n`, `--dry-run` | Show the `nsupdate` script, send nothing |
 | `-r`, `--resume FILE` | Resume a saved session (rebases onto the current zone) |
+
+When the server or key comes from a default, zedit prints which ones it uses.
+
+### Default key
+
+Without `-k`, the first of these that exists is used:
+
+1. `$ZEDIT_KEYFILE`
+2. `~/.config/zedit/keys/ZONE.key` (e.g. `keys/example.com.key`; honours `$XDG_CONFIG_HOME`)
+3. `~/.config/zedit/default.key`
+
+If none exists, zedit runs without TSIG. zedit warns if the key file is readable by
+group or others.
+
+```sh
+mkdir -p ~/.config/zedit/keys && chmod 700 ~/.config/zedit
+tsig-keygen -a hmac-sha256 admin > ~/.config/zedit/default.key
+chmod 600 ~/.config/zedit/default.key
+```
 
 ### Server requirements
 
@@ -77,6 +98,21 @@ Use a dedicated admin key, not the one your DHCP server uses for DDNS.
 **Filtered types.** RRSIG, NSEC, NSEC3, NSEC3PARAM, DNSKEY, CDS, CDNSKEY, ZONEMD and
 BIND's private TYPE65534 are removed from both sides of the diff and never
 touched. (Deleting NSEC3PARAM or TYPE65534 through UPDATE would change signing.)
+
+**Seeing everything.** With `-a` the filtered records are shown in place, as
+comment lines marked `;ro`, each RRSIG right after the type it covers:
+
+```
+@        300 IN NS     ns1
+;ro @    300 IN RRSIG  NS 13 2 300 20261019040406 20261005123408 34319 @ y0Ov…
+;ro @   3600 IN DNSKEY 257 3 13 et91FeNyNspnfPc6wD0cXkDc1N92g8Eg…
+www      300 IN A      192.0.2.10
+;ro www  300 IN RRSIG  A 13 3 300 20261019040406 20261005123408 34319 @ eiIq…
+```
+
+Being comments, they never reach the diff, the update or the merge, so editing or
+deleting them has no effect. `--no-rrsig` keeps the interesting ones (DNSKEY, CDS,
+CDNSKEY, NSEC3PARAM, TYPE65534) and drops the bulky ones.
 
 **SOA.** RNAME, REFRESH, RETRY, EXPIRE and MINIMUM are editable. MNAME, SERIAL and
 the SOA record's own TTL are locked. When the SOA changes, the update carries

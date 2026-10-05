@@ -39,6 +39,7 @@ import dns.name
 import dns.query
 import dns.rdataset
 import dns.rdatatype
+import dns.resolver
 import dns.tsigkeyring
 import dns.zone
 
@@ -46,8 +47,11 @@ from zedit import __version__
 
 SOA = int(dns.rdatatype.SOA)
 CNAME = int(dns.rdatatype.CNAME)
+RRSIG = int(dns.rdatatype.RRSIG)
 # RRSIG, NSEC, DNSKEY, NSEC3, NSEC3PARAM, CDS, CDNSKEY, ZONEMD, BIND private (signing state)
 FILTERED = {46, 47, 48, 50, 51, 59, 60, 63, 65534}
+# Omitted from --show-all by --no-rrsig: the bulky, constantly changing ones
+NOISY = {46, 47, 50}  # RRSIG, NSEC, NSEC3
 SOA_EDITABLE = ("rname", "refresh", "retry", "expire", "minimum")
 LOCKED_SOA = ("mname", "serial")
 LOCK_SOA_TTL = True
@@ -89,20 +93,20 @@ def load_bind_key(path):
 
 
 def to_model(zone):
-    """-> ({(relative name, rdtype): Rdataset} without SOA/filtered, apex SOA, rejected)."""
-    m, rejected, soa = {}, set(), None
+    """-> (model, apex SOA, rejected).
+
+    model:    {(relative name, rdtype): Rdataset} without SOA and FILTERED types
+    rejected: {(relative name, rdtype, covers): Rdataset} for FILTERED types and
+              any SOA outside the apex (keyed with covers: one RRSIG set per type)"""
+    m, rejected, soa = {}, {}, None
     for name, rds in zone.iterate_rdatasets():
         t = int(rds.rdtype)
-        if t == SOA:
-            if name == dns.name.empty:
-                soa = rds
-            else:
-                rejected.add((name, t))
-            continue
-        if t in FILTERED:
-            rejected.add((name, t))
-            continue
-        m[(name, t)] = rds
+        if t == SOA and name == dns.name.empty:
+            soa = rds
+        elif t == SOA or t in FILTERED:
+            rejected[(name, t, int(rds.covers))] = rds
+        else:
+            m[(name, t)] = rds
     return m, soa, rejected
 
 
@@ -114,17 +118,17 @@ def fetch(ctx):
         zone = dns.zone.from_xfr(xfr, relativize=True)
     except Exception as e:  # dnspython raises a whole zoo of types here
         raise ZeditError(f"AXFR failed: {e}") from e
-    model, soa, _ = to_model(zone)
+    model, soa, hidden = to_model(zone)
     if soa is None:
         raise ZeditError("AXFR has no SOA at the apex")
-    return model, soa
+    return model, soa, hidden
 
 
 def parse_text(text, origin):
     z = dns.zone.from_text(text, origin=origin, relativize=True, check_origin=False)
     m, soa, rejected = to_model(z)
     if rejected:
-        bad = ", ".join(sorted({f"{n} {tname(t)}" for n, t in rejected}))
+        bad = ", ".join(sorted({f"{k[0]} {tname(k[1])}" for k in rejected}))
         raise ValueError(f"records not allowed (DNSSEC, or SOA outside the apex): {bad}")
     if soa is None:
         raise ValueError("SOA missing - it may be edited but not removed")
@@ -163,20 +167,33 @@ def sortkey(k):
     return (k[0], k[1])  # dns.name gives canonical DNS order, apex first
 
 
-def rr_lines(m, origin, pad=0, notes=None):
+def display_key(k):
+    """Owner name, then type; an RRSIG set sorts right after the type it covers."""
+    name, t = k[0], k[1]
+    if t == RRSIG:
+        return (name, k[2], 1)
+    return (name, t, 0)
+
+
+def rr_lines(m, origin, pad=0, notes=None, hidden=None):
+    """Zone file lines for model m. With hidden (a rejected dict from to_model),
+    those records are interleaved as ';ro' comment lines: shown, never parsed."""
     out = []
-    for key in sorted(m, key=sortkey):
-        name, t = key
-        rds = m[key]
+    hidden = hidden or {}
+    for key in sorted([*m, *hidden], key=display_key):
+        ro = key in hidden
+        name, t = key[0], key[1]
+        rds = hidden[key] if ro else m[key]
         if notes and key in notes:
             out += notes[key]
         n = name.to_text()
+        prefix = ";ro " if ro else ""
         for rd in sorted(rds, key=lambda r: r.to_text(origin=origin, relativize=True)):
             txt = rd.to_text(origin=origin, relativize=True)
             if pad:
-                out.append(f"{n:<{pad}} {rds.ttl:>7} IN {tname(t):<6} {txt}")
+                out.append(f"{prefix}{n:<{pad}} {rds.ttl:>7} IN {tname(t):<6} {txt}")
             else:
-                out.append(f"{n}\t{rds.ttl}\tIN\t{tname(t)}\t{txt}")
+                out.append(f"{prefix}{n}\t{rds.ttl}\tIN\t{tname(t)}\t{txt}")
     return out
 
 
@@ -187,14 +204,21 @@ def soa_line(rds, origin, pad=0):
     return f"@\t{rds.ttl}\tIN\tSOA\t{txt}"
 
 
-def render_file(soa_rds, model, origin, server, notes=None, extra=()):
+def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=None):
     notes = notes or {}
-    pad = max([len(k[0].to_text()) for k in model] + [1])
+    pad = max([len(k[0].to_text()) for k in [*model, *(hidden or {})]] + [1])
+    if hidden is None:
+        filtered = ["; Filtered out: " + " ".join(tname(t) for t in sorted(FILTERED))]
+    else:
+        filtered = [
+            "; Lines starting with ';ro' are read-only (DNSSEC / server-maintained);",
+            ";      editing or removing them has no effect.",
+        ]
     hdr = [
         f"; Zone: {origin}  Server: {server}  Serial: {soa_rds[0].serial}",
         "; SOA: RNAME, REFRESH, RETRY, EXPIRE and MINIMUM may be edited;",
         ";      MNAME, SERIAL and the SOA record TTL are locked (serial is bumped automatically).",
-        "; Filtered out: " + " ".join(tname(t) for t in sorted(FILTERED)),
+        *filtered,
         "; Records without a TTL get $TTL below (= SOA MINIMUM at transfer time).",
         *extra,
         f"$ORIGIN {origin}",
@@ -204,7 +228,14 @@ def render_file(soa_rds, model, origin, server, notes=None, extra=()):
         soa_line(soa_rds, origin, pad),
         "",
     ]
-    return "\n".join(hdr + rr_lines(model, origin, pad, notes)) + "\n"
+    return "\n".join(hdr + rr_lines(model, origin, pad, notes, hidden)) + "\n"
+
+
+def shown(ctx, hidden):
+    """The read-only records to display, per --show-all / --no-rrsig, or None."""
+    if not ctx.show_all:
+        return None
+    return {k: v for k, v in hidden.items() if not (ctx.no_rrsig and k[1] in NOISY)}
 
 
 def write_atomic(path, text):
@@ -288,7 +319,7 @@ def merge_soa(b, m, t):
 
 
 def rebase(ctx, base, base_soa, mine, mine_soa):
-    theirs, theirs_soa = fetch(ctx)
+    theirs, theirs_soa, theirs_hidden = fetch(ctx)
     merged, notes, dropped, conflicts = merge3(base, mine, theirs)
     msoa, snote, sconf = merge_soa(base_soa, mine_soa, theirs_soa)
     if snote:
@@ -298,8 +329,11 @@ def rebase(ctx, base, base_soa, mine, mine_soa):
     extra += [f"; Removed by merge (empty RRset): {d}" for d in dropped]
     # Write the edit first, then the base: if we crash in between, the next
     # rebase is still correct (merged already contains the server's changes).
-    write_atomic(ctx.path, render_file(msoa, merged, ctx.origin, ctx.server, notes, extra))
-    write_atomic(ctx.basepath, render_file(theirs_soa, theirs, ctx.origin, ctx.server))
+    write_atomic(
+        ctx.path,
+        render_file(msoa, merged, ctx.origin, ctx.label, notes, extra, shown(ctx, theirs_hidden)),
+    )
+    write_atomic(ctx.basepath, render_file(theirs_soa, theirs, ctx.origin, ctx.label))
     print(
         f"Rebased onto serial {theirs_soa[0].serial}: {len(notes)} RRset(s) changed on "
         f"both sides, {conflicts} conflict(s), {len(dropped)} removed."
@@ -415,7 +449,7 @@ def verify(ctx, base, new, base_soa, new_soa, attempts=10):
     changed = [k for k in set(base) | set(new) if not same(base.get(k), new.get(k))]
     bad = []
     for i in range(attempts):
-        after, after_soa = fetch(ctx)
+        after, after_soa, _ = fetch(ctx)
         bad = [
             f"{k[0]} {tname(k[1])}"
             for k in sorted(changed, key=sortkey)
@@ -507,6 +541,39 @@ def resolve(host, port):
         die(f"cannot resolve {host}: {e}")
 
 
+def primary_from_mname(origin):
+    """The zone's primary according to the SOA MNAME, via the system resolver."""
+    try:
+        answer = dns.resolver.resolve(origin, "SOA", lifetime=10)
+    except dns.exception.DNSException as e:
+        die(f"cannot look up the SOA of {origin} to find its primary ({e}); use -s SERVER")
+    return answer[0].mname.to_text()
+
+
+def config_dir():
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "zedit")
+
+
+def find_keyfile(origin):
+    """Default TSIG key: $ZEDIT_KEYFILE, else ~/.config/zedit/keys/ZONE.key,
+    else ~/.config/zedit/default.key, else None (no TSIG)."""
+    env = os.environ.get("ZEDIT_KEYFILE")
+    if env:
+        return env
+    zone = origin.to_text(omit_final_dot=True).lower()
+    for p in (os.path.join(config_dir(), "keys", f"{zone}.key"), os.path.join(config_dir(), "default.key")):
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def check_keyfile(path):
+    if not os.path.isfile(path):
+        die(f"key file {path} not found")
+    if os.stat(path).st_mode & 0o077:
+        print(f"zedit: warning: {path} is readable by group/others (chmod 600)", file=sys.stderr)
+
+
 def state_dir():
     d = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "zedit")
     os.makedirs(d, mode=0o700, exist_ok=True)
@@ -548,13 +615,12 @@ def session(ctx, args):
         base, base_soa, conflicts = rebase(ctx, base, base_soa, mine, mine_soa)
         need_edit = conflicts > 0
     else:
-        base, base_soa = fetch(ctx)
+        base, base_soa, hidden = fetch(ctx)
         stem = f"{ctx.origin.to_text(omit_final_dot=True)}-{time.strftime('%Y%m%dT%H%M%S')}"
         ctx.path = os.path.join(state_dir(), stem + ".zone")
         ctx.basepath = ctx.path + ".base"
-        text = render_file(base_soa, base, ctx.origin, ctx.server)
-        write_atomic(ctx.basepath, text)
-        write_atomic(ctx.path, text)
+        write_atomic(ctx.basepath, render_file(base_soa, base, ctx.origin, ctx.label))
+        write_atomic(ctx.path, render_file(base_soa, base, ctx.origin, ctx.label, hidden=shown(ctx, hidden)))
         need_edit = True
 
     while True:
@@ -632,26 +698,53 @@ def main():
         prog="zedit", description="Edit a dynamic DNS zone via AXFR + $EDITOR + nsupdate"
     )
     ap.add_argument("zone")
-    ap.add_argument("-s", "--server", default="127.0.0.1", help="primary server (default 127.0.0.1)")
+    ap.add_argument("-s", "--server", help="primary server (default: the zone's SOA MNAME)")
     ap.add_argument("-p", "--port", type=int, default=53)
-    ap.add_argument("-k", "--keyfile", help="TSIG key (tsig-keygen format), used for AXFR and UPDATE")
+    ap.add_argument(
+        "-k",
+        "--keyfile",
+        help="TSIG key (tsig-keygen format), used for AXFR and UPDATE (default: $ZEDIT_KEYFILE, "
+        "else ~/.config/zedit/keys/ZONE.key, else ~/.config/zedit/default.key)",
+    )
+    ap.add_argument(
+        "-a",
+        "--show-all",
+        action="store_true",
+        help="also show DNSSEC and server-maintained records, as read-only ';ro' comment lines",
+    )
+    ap.add_argument(
+        "--no-rrsig",
+        action="store_true",
+        help="with --show-all, leave out RRSIG, NSEC and NSEC3 (implies -a)",
+    )
     ap.add_argument("-n", "--dry-run", action="store_true", help="show the nsupdate script, send nothing")
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("-r", "--resume", metavar="FILE", help="resume a saved edit (requires FILE.base)")
     args = ap.parse_args()
 
+    origin = dns.name.from_text(args.zone)
+    host = args.server or primary_from_mname(origin)
+    address = resolve(host, args.port)
+    keyfile = args.keyfile or find_keyfile(origin)
+    if keyfile:
+        check_keyfile(keyfile)
     ctx = SimpleNamespace(
-        origin=dns.name.from_text(args.zone),
+        origin=origin,
         port=args.port,
-        server=resolve(args.server, args.port),
-        keyfile=args.keyfile,
+        server=address,
+        label=address if host.rstrip(".") == address else f"{host.rstrip('.')} ({address})",
+        keyfile=keyfile,
         keyring=None,
         keyname=None,
+        show_all=args.show_all or args.no_rrsig,
+        no_rrsig=args.no_rrsig,
         path=None,
         basepath=None,
     )
-    if args.keyfile:
-        ctx.keyring, ctx.keyname = load_bind_key(args.keyfile)
+    if keyfile:
+        ctx.keyring, ctx.keyname = load_bind_key(keyfile)
+    if not args.server or not args.keyfile:
+        print(f"Server: {ctx.label}  Key: {keyfile or 'none'}", file=sys.stderr)
 
     try:
         rc = session(ctx, args)

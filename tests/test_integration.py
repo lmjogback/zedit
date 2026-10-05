@@ -93,8 +93,16 @@ def server(request, tmp_path):
 
 
 def run_zedit(port, key, tmp_path, editor, answers, *extra):
-    env = dict(os.environ, EDITOR=str(editor), XDG_STATE_HOME=str(tmp_path / "state"))
-    args = [sys.executable, "-m", "zedit", "-s", "127.0.0.1", "-p", str(port), "-k", str(key), *extra]
+    """Run zedit; key=None means no -k (the default key lookup applies)."""
+    env = dict(
+        os.environ,
+        EDITOR=str(editor),
+        XDG_STATE_HOME=str(tmp_path / "state"),
+        XDG_CONFIG_HOME=str(tmp_path / "config"),
+    )
+    env.pop("ZEDIT_KEYFILE", None)
+    keyarg = ["-k", str(key)] if key else []
+    args = [sys.executable, "-m", "zedit", "-s", "127.0.0.1", "-p", str(port), *keyarg, *extra]
     return subprocess.run(args + [ZONE], input=answers, text=True, capture_output=True, env=env)
 
 
@@ -225,3 +233,34 @@ def test_serial_update_methods(tmp_path, method, signing):
         s2, refresh = soa(port, key)
         assert refresh == 3600
         assert serial_greater(s2, s1)
+
+
+def test_show_all_is_read_only(server):
+    port, key, tmp = server
+    signed = any(" DNSKEY " in rr for rr in axfr(port, key))
+    # Save what the editor sees, change www, and tamper with every read-only line
+    ed = write_editor(
+        tmp,
+        'cp "$1" "$1.seen"\n'
+        "sed -i -e 's/192.0.2.10/192.0.2.11/' -e '/^;ro /d' \"$1\"\n"
+        'cp "$1.seen" ' + str(tmp / "seen.zone") + "\n",
+    )
+    before = {rr for rr in axfr(port, key) if " DNSKEY " in rr}
+    r = run_zedit(port, key, tmp, ed, "y\n", "-a")
+    assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+    seen = (tmp / "seen.zone").read_text()
+    assert ("\n;ro @" in seen and " DNSKEY " in seen and " RRSIG " in seen) == signed
+    assert "1 delete, 1 add" in r.stdout  # only www; the deleted ;ro lines had no effect
+    assert {rr for rr in axfr(port, key) if " DNSKEY " in rr} == before
+
+
+def test_default_keyfile_from_config(server):
+    port, key, tmp = server
+    keys = tmp / "config" / "zedit" / "keys"
+    keys.mkdir(parents=True)
+    (keys / "example.com.key").write_text(key.read_text())
+    (keys / "example.com.key").chmod(0o600)
+    ed = write_editor(tmp, "sed -i 's/192.0.2.10/192.0.2.12/' \"$1\"\n")
+    r = run_zedit(port, None, tmp, ed, "y\n")
+    assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+    assert f"Key: {keys / 'example.com.key'}" in r.stderr

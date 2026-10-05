@@ -26,7 +26,7 @@ def addrs(m, name, t="A"):
 def test_dnssec_types_filtered():
     m, _, rejected = model("@ NS ns1\nns1 A 192.0.2.1\n@ NSEC3PARAM 1 0 0 -\n@ TYPE65534 \\# 5 0D12340001\n")
     assert set(m) == {key("@", "NS"), key("ns1", "A")}
-    assert {t for _, t in rejected} == {51, 65534}
+    assert {k[1] for k in rejected} == {51, 65534}
 
 
 def test_compute_update_minimal_and_ordered():
@@ -144,3 +144,60 @@ def test_soa_update_uses_live_serial():
     _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 60\n")
     (line,) = cli.soa_update(old, new, ORIGIN, current_serial=117)
     assert " 118 7200 900 1209600 60" in line
+
+
+SIGNED = (
+    "@ NS ns1\n"
+    "@ RRSIG NS 13 2 300 20261019040406 20261005123408 34319 @ AAAA\n"
+    "@ DNSKEY 257 3 13 AwEAAQ==\n"
+    "@ RRSIG DNSKEY 13 2 3600 20261019133408 20261005123408 34319 @ AAAA\n"
+    "@ TYPE65534 \\# 5 0d860f0001\n"
+    "www A 192.0.2.10\n"
+    "www RRSIG A 13 3 300 20261019040406 20261005123408 34319 @ AAAA\n"
+    "www NSEC @ A RRSIG NSEC\n"
+)
+
+
+def test_show_all_renders_read_only_and_round_trips():
+    m, soa, hidden = model(SIGNED)
+    text = cli.render_file(soa, m, ORIGIN, "x", hidden=hidden)
+    ro = [line for line in text.splitlines() if line.startswith(";ro ")]
+    assert len(ro) == 6  # RRSIG NS, DNSKEY, RRSIG DNSKEY, TYPE65534, RRSIG A, NSEC
+    lines = text.splitlines()
+    # Each RRSIG set follows the type it covers
+    a = next(i for i, x in enumerate(lines) if x.startswith("www") and " A " in x)
+    assert " RRSIG  A " in lines[a + 1]
+    k = next(i for i, x in enumerate(lines) if " DNSKEY " in x)
+    assert " RRSIG  DNSKEY " in lines[k + 1]
+    # Read-only lines are comments: parsing the file yields exactly the editable model
+    m2, soa2 = cli.parse_text(text, ORIGIN)
+    assert set(m2) == set(m) and all(cli.same(m[x], m2[x]) for x in m)
+
+
+def test_no_rrsig_keeps_keys_drops_noise():
+    _, _, hidden = model(SIGNED)
+    ctx = cli.SimpleNamespace(show_all=True, no_rrsig=True)
+    assert sorted(cli.tname(k[1]) for k in cli.shown(ctx, hidden)) == ["DNSKEY", "TYPE65534"]
+    assert cli.shown(cli.SimpleNamespace(show_all=False, no_rrsig=False), hidden) is None
+
+
+def test_find_keyfile_order(tmp_path, monkeypatch):
+    monkeypatch.delenv("ZEDIT_KEYFILE", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert cli.find_keyfile(ORIGIN) is None
+    default = tmp_path / "zedit" / "default.key"
+    default.parent.mkdir()
+    default.write_text("x")
+    assert cli.find_keyfile(ORIGIN) == str(default)
+    zone = tmp_path / "zedit" / "keys" / "example.com.key"
+    zone.parent.mkdir()
+    zone.write_text("x")
+    assert cli.find_keyfile(ORIGIN) == str(zone)
+    monkeypatch.setenv("ZEDIT_KEYFILE", "/elsewhere.key")
+    assert cli.find_keyfile(ORIGIN) == "/elsewhere.key"
+
+
+def test_primary_from_mname(monkeypatch):
+    _, soa, _ = model("", soa="@ 3600 IN SOA ns1.example.net. hm 1 2 3 4 5\n")
+    monkeypatch.setattr(cli.dns.resolver, "resolve", lambda *a, **kw: soa)
+    assert cli.primary_from_mname(ORIGIN) == "ns1.example.net."
