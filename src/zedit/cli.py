@@ -3,13 +3,19 @@
 
 Flow:
   AXFR (TSIG) -> strip DNSSEC/server-maintained types -> $EDITOR
-  -> semantic diff -> confirmation -> nsupdate (one atomic UPDATE with an
-  SOA prerequisite acting as an optimistic lock).
+  -> semantic diff -> confirmation -> nsupdate (one atomic UPDATE with
+  value-dependent prerequisites on exactly the RRsets it touches, acting as
+  an optimistic lock) -> verification by a fresh AXFR.
+
+  The lock deliberately does not use the SOA: in a DNSSEC-signed zone the
+  serial changes on every re-signing, and with inline-signing the transferred
+  (signed) serial differs from the serial of the unsigned zone that receives
+  the UPDATE.
 
 Error handling:
   The edit is saved in $XDG_STATE_HOME/zedit (default ~/.local/state/zedit)
   together with FILE.base = the zone as transferred. If the server changed
-  in the meantime (prereq -> NXRRSET) or nsupdate times out, the edit can be
+  RRsets you touched (prereq -> NXRRSET/YXRRSET) or nsupdate times out, the edit can be
   rebased: new AXFR + three-way merge (base, mine, theirs).
   Aborted/failed sessions are resumed with --resume FILE.
 
@@ -28,6 +34,7 @@ import time
 from types import SimpleNamespace
 
 import dns.exception
+import dns.message
 import dns.name
 import dns.query
 import dns.rdataset
@@ -327,26 +334,103 @@ def compute_update(old, new, origin):
     return dels, adds
 
 
-def soa_update(old_rds, new_rds, origin):
+def compute_prereqs(old, new, origin):
+    """Optimistic lock on exactly the RRsets this update touches (RFC 2136 §2.4):
+    value-dependent "RRset exists" with the base content for RRsets that are
+    changed or deleted, "RRset does not exist" for RRsets that are created.
+    Concurrent changes to other names (e.g. DHCP/DDNS) don't conflict."""
+    out = []
+    for key in sorted(set(old) | set(new), key=sortkey):
+        o, n = old.get(key), new.get(key)
+        if same(o, n):
+            continue
+        fq = key[0].derelativize(origin).to_text()
+        tt = tname(key[1])
+        if o is None:
+            out.append(f"prereq nxrrset {fq} IN {tt}")
+        else:
+            out += [f"prereq yxrrset {fq} IN {tt} {r.to_text(origin=origin, relativize=False)}" for r in o]
+    return out
+
+
+def serial_max(a, b):
+    """The greater of two serials in RFC 1982 serial number arithmetic."""
+    if b is None:
+        return a
+    return b if 0 < (b - a) % 2**32 < 2**31 else a
+
+
+def live_serial(ctx):
+    """Current SOA serial as answered by the server, or None if the query fails.
+    With inline-signing this is the signed serial, normally >= the unsigned one."""
+    try:
+        q = dns.message.make_query(ctx.origin, dns.rdatatype.SOA)
+        if ctx.keyring:
+            q.use_tsig(ctx.keyring, keyname=ctx.keyname)
+        r = dns.query.tcp(q, ctx.server, port=ctx.port, timeout=10)
+        for rrset in r.answer:
+            if rrset.rdtype == dns.rdatatype.SOA:
+                return rrset[0].serial
+    except Exception:
+        pass
+    return None
+
+
+def soa_changed(old_rds, new_rds):
+    return old_rds.ttl != new_rds.ttl or old_rds[0] != new_rds[0]
+
+
+def soa_update(old_rds, new_rds, origin, current_serial=None):
     """RFC 2136 §3.4.2.2: an SOA add replaces the existing SOA only if its serial
-    is greater (RFC 1982), otherwise it is silently ignored. Hence send
-    serial+1; BIND then does not bump it a second time."""
-    o, n = old_rds[0], new_rds[0]
-    if old_rds.ttl == new_rds.ttl and o == n:
+    is greater (RFC 1982), otherwise it is silently ignored. The transferred
+    serial may be stale (re-signing) or belong to the signed zone (inline-signing),
+    so send max(base, live) + 1; BIND then does not bump it a second time.
+    No prerequisite is put on the SOA itself, for the same reason."""
+    if not soa_changed(old_rds, new_rds):
         return []
-    soa = n.replace(serial=(o.serial + 1) % 2**32)
+    serial = (serial_max(old_rds[0].serial, current_serial) + 1) % 2**32
+    soa = new_rds[0].replace(serial=serial)
     return [f"update add {origin} {new_rds.ttl} IN SOA {soa.to_text(origin=origin, relativize=False)}"]
 
 
-def build_script(server, port, origin, soa, dels, adds):
-    lines = [
-        f"server {server} {port}",
-        f"zone {origin}",
-        # Optimistic lock: NXRRSET if the zone changed since the base was transferred.
-        f"prereq yxrrset {origin} IN SOA {soa.to_text(origin=origin, relativize=False)}",
-    ]
+def build_script(server, port, origin, prereqs, dels, adds):
+    lines = [f"server {server} {port}", f"zone {origin}"]
     # All deletes before adds: handles e.g. A -> CNAME in the same transaction.
-    return "\n".join(lines + dels + adds + ["send", ""])
+    return "\n".join(lines + prereqs + dels + adds + ["send", ""])
+
+
+def make_script(ctx, base_soa, new_soa, prereqs, dels, adds):
+    # The SOA serial is taken from the live zone at the moment the script is built.
+    serial = live_serial(ctx) if soa_changed(base_soa, new_soa) else None
+    soa_adds = soa_update(base_soa, new_soa, ctx.origin, serial)
+    return build_script(ctx.server, ctx.port, ctx.origin, prereqs, dels, adds + soa_adds)
+
+
+def verify(ctx, base, new, base_soa, new_soa, attempts=10):
+    """Re-transfer the zone and check that every RRset we changed now matches
+    the edit. BIND silently drops some updates (CNAME rule, SOA with a non-greater
+    serial, TTLs above a dnssec-policy max-zone-ttl), and with inline-signing the
+    signed zone is updated asynchronously, hence the retries.
+    -> list of RRsets that don't match (empty on success)."""
+    changed = [k for k in set(base) | set(new) if not same(base.get(k), new.get(k))]
+    bad = []
+    for i in range(attempts):
+        after, after_soa = fetch(ctx)
+        bad = [
+            f"{k[0]} {tname(k[1])}"
+            for k in sorted(changed, key=sortkey)
+            if not same(after.get(k), new.get(k))
+        ]
+        if soa_changed(base_soa, new_soa):
+            bad += [
+                f"SOA {f.upper()}" for f in SOA_EDITABLE if getattr(after_soa[0], f) != getattr(new_soa[0], f)
+            ]
+            if not LOCK_SOA_TTL and after_soa.ttl != new_soa.ttl:
+                bad.append("SOA record TTL")
+        if not bad:
+            return []
+        time.sleep(min(0.25 * 2**i, 2))
+    return bad
 
 
 def run_nsupdate(script, keyfile):
@@ -368,8 +452,8 @@ def run_nsupdate(script, keyfile):
     out = (p.stdout + p.stderr).strip()
     if p.returncode == 0:
         return True, out, False
-    if "NXRRSET" in out:
-        return False, out + "\nThe zone changed after the base was transferred (SOA prereq failed).", True
+    if "NXRRSET" in out or "YXRRSET" in out:
+        return False, out + "\nRRsets you changed were modified on the server after the transfer.", True
     # REFUSED/NOTAUTH/BADKEY/SERVFAIL etc.: rebasing won't help
     return False, out, False
 
@@ -496,31 +580,42 @@ def session(ctx, args):
             return 0
 
         dels, adds = compute_update(base, new, ctx.origin)
-        soa_adds = soa_update(base_soa, new_soa, ctx.origin)
-        script = build_script(ctx.server, ctx.port, ctx.origin, base_soa[0], dels, adds + soa_adds)
+        prereqs = compute_prereqs(base, new, ctx.origin)
+        with_soa = soa_changed(base_soa, new_soa)
+        plan = (base_soa, new_soa, prereqs, dels, adds)
+
         show_diff(old_lines, new_lines, f"{ctx.origin} (serial {base_soa[0].serial})", "edited")
         print(
-            f"\n{len(dels)} delete, {len(adds)} add{', SOA changed' if soa_adds else ''} in 1 atomic UPDATE."
+            f"\n{len(dels)} delete, {len(adds)} add{', SOA changed' if with_soa else ''} in 1 atomic UPDATE."
         )
 
         while True:
             a = ask("Send? [y]es / [N]o / [e]dit / [s]cript: ", {"y", "n", "e", "s"})
             if a != "s":
                 break
-            print(script)
+            print(make_script(ctx, *plan))
         if a == "e":
             continue
         if a != "y" or args.dry_run:
             if args.dry_run:
-                print(script)
+                print(make_script(ctx, *plan))
             print("Nothing sent.")
             return 0
 
-        ok, out, can_rebase = run_nsupdate(script, ctx.keyfile)
+        ok, out, can_rebase = run_nsupdate(make_script(ctx, *plan), ctx.keyfile)
         if ok:
             if out:
                 print(out)
-            print("Updated.")
+            missing = verify(ctx, base, new, base_soa, new_soa)
+            if missing:
+                print(
+                    "Update accepted, but the server does not show these changes:\n  "
+                    + "\n  ".join(missing)
+                    + "\nCheck the server log (e.g. CNAME conflicts, dnssec-policy max-zone-ttl).",
+                    file=sys.stderr,
+                )
+                return 3
+            print("Updated and verified.")
             cleanup(ctx)
             return 0
         print(out, file=sys.stderr)

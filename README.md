@@ -4,10 +4,12 @@ Edit a dynamic DNS zone as if it were a plain zone file.
 
 `zedit` transfers the zone with AXFR, strips DNSSEC and other server-maintained
 records, opens it in `$EDITOR`, shows a semantic diff of your changes, and on
-confirmation applies them with **one atomic `nsupdate`** guarded by an SOA
-prerequisite. If the zone changed while you were editing (DHCP/DDNS, another
-admin), your edits are **rebased** onto the current zone with a three-way merge
-instead of overwriting the concurrent change.
+confirmation applies them with **one atomic `nsupdate`** guarded by
+prerequisites on exactly the RRsets you touched, then **verifies** the result.
+Concurrent changes elsewhere in the zone (DHCP/DDNS, another admin) don't
+conflict; if someone changed the same RRsets, your edits are **rebased** onto
+the current zone with a three-way merge instead of overwriting their change.
+Works with unsigned and DNSSEC-signed zones (in-place and inline-signing).
 
 ```
 $ zedit -s ns1.example.net -k /etc/bind/admin.key example.com
@@ -78,19 +80,33 @@ touched. (Deleting NSEC3PARAM or TYPE65534 through UPDATE would change signing.)
 
 **SOA.** RNAME, REFRESH, RETRY, EXPIRE and MINIMUM are editable. MNAME, SERIAL and
 the SOA record's own TTL are locked. When the SOA changes, the update carries
-`serial + 1`, since RFC 2136 §3.4.2.2 silently ignores an SOA whose serial isn't
-greater.
+`max(transferred, live) + 1` in RFC 1982 arithmetic, read from the server at the
+moment of sending, since RFC 2136 §3.4.2.2 silently ignores an SOA whose serial
+isn't greater.
 
 **Semantic diff.** Both sides are parsed and re-rendered canonically before
 diffing, so whitespace, alignment, comments, ordering and equivalent rdata
 spellings (`www` vs `www.example.com.`) don't show up as changes.
 
 **Minimal atomic update.** Only changed RRs are sent, deletes before adds,
-in a single UPDATE. A TTL change replaces the whole RRset. The prerequisite
-`prereq yxrrset <zone> SOA <exact rdata>` makes the update fail with NXRRSET if
-anything changed since the transfer.
+in a single UPDATE. A TTL change replaces the whole RRset.
 
-**Rebase.** On NXRRSET (or an `nsupdate` timeout) you can rebase. zedit does a
+**Optimistic lock per RRset.** Every RRset the update changes or deletes gets a
+value-dependent `prereq yxrrset` with its content as transferred; every RRset it
+creates gets `prereq nxrrset`. The update fails (NXRRSET/YXRRSET) only if one of
+*those* RRsets changed in the meantime. The SOA is deliberately not used as the
+lock: in a signed zone the serial changes on every re-signing, and with
+inline-signing the transferred (signed) serial never matches the unsigned zone
+that receives the UPDATE.
+
+**Verification.** After a successful `nsupdate`, zedit transfers the zone again
+(with retries, since inline-signing updates the signed zone asynchronously) and
+checks that every changed RRset matches your edit. BIND silently drops some
+updates, e.g. an add that violates the CNAME rule, an SOA with a non-greater
+serial, or TTLs above a `dnssec-policy` `max-zone-ttl`. Mismatches are listed
+and zedit exits with status 3.
+
+**Rebase.** On NXRRSET/YXRRSET (or an `nsupdate` timeout) you can rebase. zedit does a
 new AXFR and merges per RRset:
 
 - changed only by you → yours
@@ -105,7 +121,11 @@ Rebasing after a timeout is safe: changes that did get applied simply drop out.
 **Saved state.** Each session is stored in `$XDG_STATE_HOME/zedit/`
 (default `~/.local/state/zedit/`) as `ZONE-TIMESTAMP.zone` plus
 `ZONE-TIMESTAMP.zone.base` (the zone as transferred). Both are removed after a
-successful update. On abort or failure zedit prints a `--resume` command.
+successful, verified update. On abort or failure zedit prints a `--resume`
+command.
+
+**Exit status.** 0 success (or nothing to do), 1 error or aborted edit,
+2 update rejected or aborted, 3 update accepted but not verified, 130 interrupted.
 
 ## Development
 

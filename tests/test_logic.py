@@ -119,3 +119,28 @@ def test_merge_soa_fieldwise():
     soa, note, conflicts = cli.merge_soa(b, m, t)
     r = soa[0]
     assert (str(r.rname), r.refresh, r.serial, conflicts) == ("admin", 3600, 105, 0)
+
+
+def test_prereqs_only_on_touched_rrsets():
+    old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\nmail A 192.0.2.9\ngone TXT x\n")
+    new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nmail A 192.0.2.9\nnew A 192.0.2.4\n")
+    assert sorted(cli.compute_prereqs(old, new, ORIGIN)) == [
+        "prereq nxrrset new.example.com. IN A",
+        'prereq yxrrset gone.example.com. IN TXT "x"',
+        "prereq yxrrset www.example.com. IN A 192.0.2.1",
+        "prereq yxrrset www.example.com. IN A 192.0.2.2",
+    ]
+
+
+def test_serial_max_rfc1982():
+    assert cli.serial_max(100, None) == 100
+    assert cli.serial_max(100, 105) == 105
+    assert cli.serial_max(105, 100) == 105
+    assert cli.serial_max(4294967290, 3) == 3  # wrapped, 3 is "greater"
+
+
+def test_soa_update_uses_live_serial():
+    _, old, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 300\n")
+    _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 60\n")
+    (line,) = cli.soa_update(old, new, ORIGIN, current_serial=117)
+    assert " 118 7200 900 1209600 60" in line
