@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.4 - 2026-10-06
+
+- Fix: in ip6.arpa zones, owners made of four single-digit nibbles (such as
+  `0.5.0.0` for a /64 delegated under a /48) were taken for IPv4 addresses and
+  rejected as outside the zone, which made such zones impossible to edit.
+- Tests: the integration tests now find BIND's tools in `/usr/sbin`, ignore a
+  developer's `$VISUAL`, and can no longer hang waiting for a terminal.
+
 ## 1.0.3 - 2026-10-06
 
 - Fix: `$GENERATE` with more than one `${offset,width,base}` modifier per side
