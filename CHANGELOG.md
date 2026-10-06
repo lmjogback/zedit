@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1 - 2026-10-06
+
+- Package metadata only: copyright holder in `LICENSE` is now "LM Jogbäck",
+  and `pyproject.toml` lists the author. No code changes.
+
 ## 1.0.0 - 2026-10-05
 
 First stable release.
