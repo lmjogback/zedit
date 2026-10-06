@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.3 - 2026-10-06
+
+- Fix: `$GENERATE` with more than one `${offset,width,base}` modifier per side
+  produced wrong records (dnspython expands only one). zedit now expands
+  `$GENERATE` itself, following BIND, including `n`/`N` nibbles for `ip6.arpa`.
+- In reverse zones, owners can be written as IP addresses (`192.0.2.10`,
+  `2001:db8::1`), also in `$GENERATE`; RFC 2317 zones are handled.
+- New `-A`/`--addresses` shows reverse-zone owners as IP addresses.
+
 ## 1.0.2 - 2026-10-06
 
 - Fix: zones with '/' in their name (RFC 2317 classless reverse zones) crashed
