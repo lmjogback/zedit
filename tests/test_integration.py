@@ -297,3 +297,49 @@ def test_generate_in_reverse_zone(tmp_path):
         assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
         assert "0 delete, 3 add" in r.stdout
         assert dig(port, key, "32." + zone, "PTR") == {f"32.{zone}. 300 IN PTR dyn-032-84.example.com."}
+
+
+@pytest.mark.parametrize(
+    "zone, existing, shown_as, added, expected",
+    [
+        (
+            "2.0.192.in-addr.arpa",
+            "10 IN PTR old.example.com.\n",
+            "192.0.2.10",
+            "192.0.2.11 PTR new.example.com.\n",
+            {"10.2.0.192.in-addr.arpa.", "11.2.0.192.in-addr.arpa."},
+        ),
+        (
+            "8.b.d.0.1.0.0.2.ip6.arpa",
+            "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0 IN PTR old.example.com.\n",
+            "2001:db8::1",
+            "2001:db8::2 PTR new.example.com.\n",
+            {
+                "1." + "0." * 23 + "8.b.d.0.1.0.0.2.ip6.arpa.",
+                "2." + "0." * 23 + "8.b.d.0.1.0.0.2.ip6.arpa.",
+            },
+        ),
+        (
+            "16/28.2.0.192.in-addr.arpa",
+            "17 IN PTR old.example.com.\n",
+            "192.0.2.17",
+            "192.0.2.18 PTR new.example.com.\n",
+            {"17.16/28.2.0.192.in-addr.arpa.", "18.16/28.2.0.192.in-addr.arpa."},
+        ),
+    ],
+)
+def test_reverse_zone_in_address_form(tmp_path, zone, existing, shown_as, added, expected):
+    records = "@ IN NS ns1.example.net.\n" + existing
+    with run_named(tmp_path, "unsigned", zone=zone, records=records) as (port, key, tmp):
+        add = tmp / "add.txt"
+        add.write_text(added)
+        seen = tmp / "seen.zone"
+        ed = write_editor(tmp, f'cp "$1" "{seen}"\ncat "{add}" >> "$1"\n')
+        r = run_zedit(port, key, tmp, ed, "y\n", "-A", zone=zone)
+        assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+        # The existing record was shown in address form...
+        shown = [line.split()[0] for line in seen.read_text().splitlines() if " PTR " in line]
+        assert shown == [shown_as]
+        # ...and the record added in address form landed on the right reverse name
+        names = {rr.split()[0] for rr in dig(port, key, zone, "AXFR") if " PTR " in rr}
+        assert names == expected

@@ -24,6 +24,7 @@ Requires: python >= 3.10, dnspython >= 2.4, nsupdate (bind9-dnsutils).
 
 import argparse
 import difflib
+import ipaddress
 import os
 import re
 import shlex
@@ -217,9 +218,132 @@ def expand_generate(text):
     return "\n".join(out), linemap
 
 
+IN_ADDR = dns.name.from_text("in-addr.arpa.")
+IP6_ARPA = dns.name.from_text("ip6.arpa.")
+LOOKS_LIKE_IPV4 = re.compile(r"^\d+\.\d+\.\d+\.\d+(/\d+)?$")  # with an optional (rejected) prefix
+
+
+def is_reverse(origin):
+    return origin.is_subdomain(IN_ADDR) or origin.is_subdomain(IP6_ARPA)
+
+
+def classless_range(origin):
+    """For an RFC 2317 zone such as 16/28.2.0.192.in-addr.arpa (or 16-31.2...),
+    the range of last octets it holds, else None."""
+    if not origin.is_subdomain(IN_ADDR) or len(origin) != 7:  # x.c.b.a.in-addr.arpa.
+        return None
+    first = origin.labels[0].decode(errors="replace")
+    m = re.fullmatch(r"(\d+)/(\d+)", first)
+    if m and 24 <= int(m.group(2)) <= 32:
+        lo = int(m.group(1))
+        hi = lo + 2 ** (32 - int(m.group(2))) - 1
+    elif m2 := re.fullmatch(r"(\d+)-(\d+)", first):
+        lo, hi = int(m2.group(1)), int(m2.group(2))
+    else:
+        return None
+    return (lo, hi) if 0 <= lo <= hi <= 255 else None
+
+
+def address_to_name(address, origin):
+    """Owner name for an IP address in this reverse zone. In an RFC 2317 zone the
+    last octet goes under the zone (192.0.2.17 -> 17.16/28.2.0.192.in-addr.arpa.)."""
+    name = dns.name.from_text(address.reverse_pointer + ".")
+    if address.version == 4 and not name.is_subdomain(origin):
+        rng = classless_range(origin)
+        if rng and name.parent() == origin.parent() and rng[0] <= int(name.labels[0]) <= rng[1]:
+            name = dns.name.Name((name.labels[0], *origin.labels))
+    return name
+
+
+def name_to_address(name, origin):
+    """The IP address a reverse-zone owner name stands for, or None."""
+    full = name.derelativize(origin)
+    labels = [label.decode(errors="replace") for label in full.labels[:-1]]
+    if full.is_subdomain(IN_ADDR):
+        octets = labels[:-2]
+        rng = classless_range(origin)
+        if rng and len(octets) == 5 and full.parent() == origin:
+            octets = [octets[0], *octets[2:]]
+        if len(octets) == 4 and all(o.isdigit() and str(int(o)) == o and int(o) <= 255 for o in octets):
+            return ".".join(reversed(octets))
+    elif full.is_subdomain(IP6_ARPA):
+        nibbles_ = labels[:-2]
+        if len(nibbles_) == 32 and all(len(x) == 1 and x in "0123456789abcdefABCDEF" for x in nibbles_):
+            return str(ipaddress.IPv6Address(int("".join(reversed(nibbles_)), 16)))
+    return None
+
+
+def owner_to_name(token, origin):
+    """In a reverse zone, an owner written as an IP address -> its absolute owner
+    name (text). None if the token isn't an address. Raises ValueError for tokens
+    that look like an address but aren't valid (e.g. 192.0.2.010), which would
+    otherwise silently become a strange relative name."""
+    if token.endswith(".") or not (LOOKS_LIKE_IPV4.match(token) or ":" in token):
+        return None
+    # Checked explicitly: whether ipaddress accepts a zone id depends on the
+    # Python version, and dropping it silently would be wrong.
+    if "%" in token:
+        raise ValueError(f"{token!r}: an address with a zone id (%...) cannot be an owner name")
+    if "/" in token:
+        raise ValueError(f"{token!r}: a prefix is not an address; write one address per record")
+    try:
+        address = ipaddress.ip_address(token)
+    except ValueError:
+        raise ValueError(f"{token!r} looks like an IP address but is not a valid one") from None
+    return address_to_name(address, origin).to_text()
+
+
+def paren_delta(line):
+    """Net change in parenthesis depth on a zone file line (quotes, escapes and
+    comments respected), to know whether the next line continues a record."""
+    depth, quoted, escaped = 0, False, False
+    for ch in line:
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            quoted = not quoted
+        elif not quoted and ch == ";":
+            break
+        elif not quoted and ch == "(":
+            depth += 1
+        elif not quoted and ch == ")":
+            depth -= 1
+    return depth
+
+
+def rewrite_address_owners(text, origin):
+    """In a reverse zone, replace owner names written as IP addresses with their
+    arpa names. Line count is preserved, so error line numbers stay valid."""
+    if not is_reverse(origin):
+        return text
+    out, depth = [], 0
+    for n, line in enumerate(text.split("\n"), 1):
+        if depth == 0 and line and not line[0].isspace() and line[0] not in ";$":
+            token = line.split(None, 1)[0]
+            try:
+                name = owner_to_name(token, origin)
+            except ValueError as e:
+                raise ValueError(f"line {n}: {e}") from None
+            if name:
+                line = name + line[len(token) :]
+        depth = max(depth + paren_delta(line), 0)
+        out.append(line)
+    return "\n".join(out)
+
+
 def read_zone(text, origin):
     """-> (zone, names outside the zone that the reader dropped)."""
     expanded, linemap = expand_generate(text)
+    try:
+        expanded = rewrite_address_owners(expanded, origin)
+    except ValueError as e:
+        # Report the line in the user's file, not in the expanded text
+        m = re.match(r"line (\d+): (.*)", str(e), re.S)
+        if m:
+            raise ValueError(f"line {linemap[int(m.group(1)) - 1]}: {m.group(2)}") from None
+        raise
     zone = dns.zone.Zone(origin, dns.rdataclass.IN, relativize=True)
     try:
         with zone.writer(True) as txn:
@@ -293,18 +417,45 @@ def display_key(k):
     return (name, t, 0)
 
 
-def rr_lines(m, origin, pad=0, notes=None, hidden=None):
+def owner_text(name, origin, addresses):
+    """The owner as written in the file: the relative name, or with --addresses
+    in a reverse zone the IP address (the apex stays '@')."""
+    if addresses and name != dns.name.empty:
+        address = name_to_address(name, origin)
+        if address:
+            return address
+    return name.to_text()
+
+
+def sort_key(origin, addresses):
+    """display_key, but with --addresses records are ordered by address."""
+    if not addresses:
+        return display_key
+
+    def key(k):
+        name, t, flag = display_key(k)
+        address = name_to_address(name, origin) if name != dns.name.empty else None
+        if address:
+            ip = ipaddress.ip_address(address)
+            return (1, ip.version, int(ip), dns.name.empty, t, flag)
+        return (0, 0, 0, name, t, flag)
+
+    return key
+
+
+def rr_lines(m, origin, pad=0, notes=None, hidden=None, addresses=False):
     """Zone file lines for model m. With hidden (a rejected dict from to_model),
-    those records are interleaved as ';ro' comment lines: shown, never parsed."""
+    those records are interleaved as ';ro' comment lines: shown, never parsed.
+    With addresses, reverse-zone owners are shown as IP addresses."""
     out = []
     hidden = hidden or {}
-    for key in sorted([*m, *hidden], key=display_key):
+    for key in sorted([*m, *hidden], key=sort_key(origin, addresses)):
         ro = key in hidden
         name, t = key[0], key[1]
         rds = hidden[key] if ro else m[key]
         if notes and key in notes:
             out += notes[key]
-        n = name.to_text()
+        n = owner_text(name, origin, addresses)
         prefix = ";ro " if ro else ""
         for rd in sorted(rds, key=lambda r: r.to_text(origin=origin, relativize=True)):
             txt = rd.to_text(origin=origin, relativize=True)
@@ -365,9 +516,9 @@ def soa_line(rds, origin, pad=0):
     return f"@\t{rds.ttl}\tIN\tSOA\t{txt}"
 
 
-def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=None):
+def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=None, addresses=False):
     notes = notes or {}
-    pad = max([len(k[0].to_text()) for k in [*model, *(hidden or {})]] + [1])
+    pad = max([len(owner_text(k[0], origin, addresses)) for k in [*model, *(hidden or {})]] + [1])
     if hidden is None:
         filtered = ["; Filtered out: " + " ".join(tname(t) for t in sorted(FILTERED))]
     else:
@@ -379,6 +530,11 @@ def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=Non
         f"; Zone: {origin}  Server: {server}  Serial: {soa_rds[0].serial}",
         *filtered,
         "; Records without a TTL get $TTL below (= SOA MINIMUM at transfer time).",
+        *(
+            ["; Owners may be written as IP addresses; they are converted to reverse names."]
+            if is_reverse(origin)
+            else []
+        ),
         *extra,
         f"$ORIGIN {origin}",
         f"$TTL {soa_rds[0].minimum}",
@@ -388,7 +544,7 @@ def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=Non
         *soa_help(soa_rds, origin),
         "",
     ]
-    return "\n".join(hdr + rr_lines(model, origin, pad, notes, hidden)) + "\n"
+    return "\n".join(hdr + rr_lines(model, origin, pad, notes, hidden, addresses)) + "\n"
 
 
 def shown(ctx, hidden):
@@ -491,7 +647,9 @@ def rebase(ctx, base, base_soa, mine, mine_soa):
     # rebase is still correct (merged already contains the server's changes).
     write_atomic(
         ctx.path,
-        render_file(msoa, merged, ctx.origin, ctx.label, notes, extra, shown(ctx, theirs_hidden)),
+        render_file(
+            msoa, merged, ctx.origin, ctx.label, notes, extra, shown(ctx, theirs_hidden), ctx.addresses
+        ),
     )
     write_atomic(ctx.basepath, render_file(theirs_soa, theirs, ctx.origin, ctx.label))
     print(
@@ -787,7 +945,12 @@ def session(ctx, args):
         ctx.path = os.path.join(state_dir(), stem + ".zone")
         ctx.basepath = ctx.path + ".base"
         write_atomic(ctx.basepath, render_file(base_soa, base, ctx.origin, ctx.label))
-        write_atomic(ctx.path, render_file(base_soa, base, ctx.origin, ctx.label, hidden=shown(ctx, hidden)))
+        write_atomic(
+            ctx.path,
+            render_file(
+                base_soa, base, ctx.origin, ctx.label, hidden=shown(ctx, hidden), addresses=ctx.addresses
+            ),
+        )
         need_edit = True
 
     while True:
@@ -805,8 +968,8 @@ def session(ctx, args):
                 continue
         need_edit = True
 
-        old_lines = [soa_line(base_soa, ctx.origin)] + rr_lines(base, ctx.origin)
-        new_lines = [soa_line(new_soa, ctx.origin)] + rr_lines(new, ctx.origin)
+        old_lines = [soa_line(base_soa, ctx.origin)] + rr_lines(base, ctx.origin, addresses=ctx.addresses)
+        new_lines = [soa_line(new_soa, ctx.origin)] + rr_lines(new, ctx.origin, addresses=ctx.addresses)
         if old_lines == new_lines:
             print("No differences from the server - nothing to send.")
             cleanup(ctx)
@@ -884,6 +1047,12 @@ def main():
         action="store_true",
         help="with --show-all, leave out RRSIG, NSEC and NSEC3 (implies -a)",
     )
+    ap.add_argument(
+        "-A",
+        "--addresses",
+        action="store_true",
+        help="in reverse zones, show owner names as IP addresses (input in address form always works)",
+    )
     ap.add_argument("-n", "--dry-run", action="store_true", help="show the nsupdate script, send nothing")
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("-r", "--resume", metavar="FILE", help="resume a saved edit (requires FILE.base)")
@@ -905,6 +1074,7 @@ def main():
         keyname=None,
         show_all=args.show_all or args.no_rrsig,
         no_rrsig=args.no_rrsig,
+        addresses=args.addresses,
         path=None,
         basepath=None,
     )

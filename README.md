@@ -47,7 +47,7 @@ uvx --from git+https://github.com/lmjogback/zedit zedit --help
 ## Usage
 
 ```
-zedit [-s SERVER] [-p PORT] [-k KEYFILE] [-a] [--no-rrsig] [-n] [-r FILE] zone
+zedit [-s SERVER] [-p PORT] [-k KEYFILE] [-a] [--no-rrsig] [-A] [-n] [-r FILE] zone
 ```
 
 | Option | |
@@ -57,6 +57,7 @@ zedit [-s SERVER] [-p PORT] [-k KEYFILE] [-a] [--no-rrsig] [-n] [-r FILE] zone
 | `-k`, `--keyfile` | TSIG key in `tsig-keygen` / `named.conf` format, used for both AXFR and UPDATE (default: see below) |
 | `-a`, `--show-all` | Also show DNSSEC and server-maintained records, as read-only `;ro` comment lines |
 | `--no-rrsig` | With `--show-all`, leave out RRSIG, NSEC and NSEC3 (implies `-a`) |
+| `-A`, `--addresses` | In reverse zones, show owner names as IP addresses |
 | `-n`, `--dry-run` | Show the `nsupdate` script, send nothing |
 | `-r`, `--resume FILE` | Resume a saved session (rebases onto the current zone) |
 
@@ -119,6 +120,29 @@ $GENERATE 30-38/2 $ PTR dyn-${0,3,d}.example.com.
 The expansion is done by zedit, not dnspython, whose own `$GENERATE` handles only
 one modifier per side. A dynamic zone stores the generated records, not the
 `$GENERATE` line, so the next edit shows the individual records.
+
+**Reverse zones in address form.** In a zone under `in-addr.arpa` or `ip6.arpa`
+you can write owners as IP addresses, in normal order; zedit converts them to the
+reverse names:
+
+```
+192.0.2.10    PTR www.example.com.     ; -> 10.2.0.192.in-addr.arpa.
+2001:db8::1   PTR www.example.com.     ; -> 1.0.0.0.…8.b.d.0.1.0.0.2.ip6.arpa.
+$GENERATE 20-29 192.0.2.$ PTR host$.example.com.
+```
+
+An owner counts as an address when it is a dotted quad or contains `:`, with no
+trailing dot. As a relative name a dotted quad would have more than four octets
+under `in-addr.arpa`, which no IPv4 address has, so this is unambiguous in
+practice; an absolute name (trailing dot) is always used as written, and other
+zones are never rewritten. An address must belong to the zone, which also catches
+an address typed backwards. Something that looks like an address but isn't valid
+(`192.0.2.010`) is an error. In an RFC 2317 zone such as
+`16/28.2.0.192.in-addr.arpa`, `192.0.2.17` becomes `17.16/28.2.0.192.in-addr.arpa.`;
+in a zone for a single address it is the apex.
+
+With `-A` the file also *shows* owners as addresses (IPv6 compressed), ordered by
+address; the apex stays `@`. The update always uses the real reverse names.
 
 **Seeing everything.** With `-a` the filtered records are shown in place, as
 comment lines marked `;ro`, each RRSIG right after the type it covers:
