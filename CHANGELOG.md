@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.2 - 2026-10-06
+
+- Fix: zones with '/' in their name (RFC 2317 classless reverse zones) crashed
+  when saving the session. The default key for such a zone is
+  `keys/16_28.2.0.192.in-addr.arpa.key` ('/' becomes '_').
+- Fix: records placed outside the zone, e.g. after a `$ORIGIN` pointing
+  elsewhere, were silently ignored. They are now reported as an error.
+
 ## 1.0.1 - 2026-10-06
 
 - Package metadata only: copyright holder in `LICENSE` is now "LM Jogbäck",
