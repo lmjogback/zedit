@@ -343,3 +343,25 @@ def test_reverse_zone_in_address_form(tmp_path, zone, existing, shown_as, added,
         # ...and the record added in address form landed on the right reverse name
         names = {rr.split()[0] for rr in dig(port, key, zone, "AXFR") if " PTR " in rr}
         assert names == expected
+
+
+def test_ip6_zone_with_four_nibble_delegation(tmp_path):
+    """A /48 reverse zone with a /64 delegation (0.5.0.0 NS) must stay editable:
+    0.5.0.0 is a nibble name, not the IPv4 address 0.5.0.0."""
+    zone = "0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
+    records = (
+        "@ IN NS ns1.example.net.\n"
+        "0.5.0.0 IN NS ns1.example.net.\n"
+        "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.2.0.0 IN PTR r1.example.net.\n"
+    )
+    with run_named(tmp_path, "unsigned", zone=zone, records=records) as (port, key, tmp):
+        add = tmp / "add.txt"
+        add.write_text("2001:db8::1:0:0:0:2 PTR r2.example.net.\n")
+        ed = write_editor(tmp, f'cat "{add}" >> "$1"\n')
+        for extra in ([], ["-A"]):
+            r = run_zedit(port, key, tmp, ed if not extra else "true", "y\n", *extra, zone=zone)
+            assert r.returncode == 0, r.stdout + r.stderr
+        # A delegation is answered with a referral, so check the zone content
+        rrs = dig(port, key, zone, "AXFR")
+        assert f"0.5.0.0.{zone}. 300 IN NS ns1.example.net." in rrs
+        assert f"2.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.0.{zone}. 300 IN PTR r2.example.net." in rrs

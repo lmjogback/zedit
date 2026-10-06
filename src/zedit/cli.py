@@ -273,11 +273,20 @@ def name_to_address(name, origin):
     return None
 
 
+NIBBLES = re.compile(r"^[0-9a-fA-F](\.[0-9a-fA-F])*$")
+
+
 def owner_to_name(token, origin):
     """In a reverse zone, an owner written as an IP address -> its absolute owner
     name (text). None if the token isn't an address. Raises ValueError for tokens
     that look like an address but aren't valid (e.g. 192.0.2.010), which would
     otherwise silently become a strange relative name."""
+    if not is_reverse(origin):
+        return None
+    if origin == IN_ADDR or (origin.is_subdomain(IP6_ARPA) and NIBBLES.match(token)):
+        # In in-addr.arpa itself four labels are a valid name, and in ip6.arpa a
+        # token like 0.5.0.0 is a nibble name (e.g. a /64 under a /48), not an address.
+        return None
     if token.endswith(".") or not (LOOKS_LIKE_IPV4.match(token) or ":" in token):
         return None
     # Checked explicitly: whether ipaddress accepts a zone id depends on the

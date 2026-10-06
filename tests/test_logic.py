@@ -421,6 +421,44 @@ def test_no_rewriting_outside_reverse_zones_or_for_absolute_names():
     assert owners("10.2.0.192.in-addr.arpa. PTR x.example.com.\n", REV) == {"10.2.0.192.in-addr.arpa."}
 
 
+IP6_48 = dns.name.from_text("0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.")  # 2001:db8::/48
+
+
+@pytest.mark.parametrize("owner", ["0.5.0.0", "0.0.0.0", "1.2.3.4", "a.b.c.d", "f", "0.5"])
+def test_nibble_names_in_ip6_zones_are_not_ipv4(owner):
+    # In ip6.arpa, 0.5.0.0 is a nibble name (here the /64 2001:db8:0:500::/64)
+    assert cli.owner_to_name(owner, IP6_48) is None
+    assert owners(f"{owner} NS ns1.example.net.\n", IP6_48) == {f"{owner}.{IP6_48}"}
+
+
+def test_ip6_zone_with_delegations_and_ptrs():
+    text = (
+        "@ NS ns1.example.net.\n"
+        "0.5.0.0 NS ns1.example.net.\n"
+        "6.4.2.0.0.0.0.0.0.0.0.0.0.0.0.0 NS ns2.example.net.\n"
+        "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.2.0.0 PTR r1.example.net.\n"
+        "2001:db8::1:0:0:0:2 PTR r2.example.net.\n"
+    )
+    assert owners(text, IP6_48) == {
+        f"{IP6_48}",
+        f"0.5.0.0.{IP6_48}",
+        f"6.4.2.0.0.0.0.0.0.0.0.0.0.0.0.0.{IP6_48}",
+        f"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.2.0.0.{IP6_48}",
+        f"2.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.0.{IP6_48}",
+    }
+
+
+def test_ipv4_in_an_ip6_zone_is_still_rejected():
+    # Not a nibble sequence, so still taken as an IPv4 address: outside the zone
+    with pytest.raises(ValueError, match="outside the zone"):
+        owners("192.0.2.10 PTR x.example.com.\n", IP6_48)
+
+
+def test_no_rewriting_in_in_addr_arpa_itself():
+    origin = dns.name.from_text("in-addr.arpa.")
+    assert cli.owner_to_name("10.2.0.192", origin) is None
+
+
 def test_continuation_lines_are_not_owners():
     m, _ = cli.parse_text("$TTL 300\n" + SOA + '10 TXT ( "first"\n192.0.2.99 )\n', REV)
     ((key, rds),) = m.items()
@@ -510,3 +548,69 @@ def test_ipv6_with_embedded_ipv4_notation():
 def test_ipv4_mapped_address_outside_the_zone():
     with pytest.raises(ValueError, match="outside the zone"):
         owners("::ffff:192.0.2.1 PTR x.example.com.\n", V6)
+
+
+# --- Exhaustive sweep: owners with 0-7 dots in every kind of zone ---------
+
+SWEEP_ZONES = [
+    "example.com.",
+    "2.0.192.in-addr.arpa.",
+    "0.192.in-addr.arpa.",
+    "192.in-addr.arpa.",
+    "in-addr.arpa.",
+    "16/28.2.0.192.in-addr.arpa.",
+    "17.2.0.192.in-addr.arpa.",
+    "0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.",
+    "8.b.d.0.1.0.0.2.ip6.arpa.",
+    "ip6.arpa.",
+]
+SWEEP_LABELS = ["0", "5", "a", "F", "10", "17", "255", "256", "010"]
+SWEEP_MIXES = [("0", "10"), ("a", "5"), ("255", "0"), ("256", "1"), ("010", "1"), ("17", "f")]
+
+
+def sweep_tokens():
+    for dots in range(8):
+        k = dots + 1
+        yield from {".".join([label] * k) for label in SWEEP_LABELS}
+        yield from {".".join((mix * k)[:k]) for mix in SWEEP_MIXES}
+
+
+def sweep_expected(token, origin):
+    """The rules, stated independently of the implementation."""
+    labels = token.split(".")
+    if not cli.is_reverse(origin) or len(labels) != 4 or not all(x.isdigit() for x in labels):
+        return "name"  # only a decimal dotted quad in a reverse zone can be IPv4
+    if origin == cli.IN_ADDR:
+        return "name"  # four labels are a valid name directly under in-addr.arpa
+    if origin.is_subdomain(cli.IP6_ARPA) and all(len(x) == 1 for x in labels):
+        return "name"  # nibbles
+    if all(str(int(x)) == x and int(x) <= 255 for x in labels):
+        return "address"
+    return "error"  # looks like IPv4 but isn't valid
+
+
+@pytest.mark.parametrize("zone", SWEEP_ZONES)
+def test_owner_sweep(zone):
+    origin = dns.name.from_text(zone)
+    rtype = "PTR x.example.com." if cli.is_reverse(origin) else "A 192.0.2.1"
+    mismatches = []
+    for token in sorted(set(sweep_tokens())):
+        expected = sweep_expected(token, origin)
+        # The helper ...
+        try:
+            got = "name" if cli.owner_to_name(token, origin) is None else "address"
+        except ValueError:
+            got = "error"
+        # ... and end to end, the way an edited file is read
+        try:
+            m, _ = cli.parse_text(f"$TTL 300\n{SOA}{token} {rtype}\n", origin)
+            (name,) = [k[0].derelativize(origin) for k in m]
+            if expected == "name":
+                e2e = name == dns.name.from_text(token, origin)
+            else:
+                e2e = expected == "address" and name == dns.name.from_text(cli.owner_to_name(token, origin))
+        except ValueError as e:
+            e2e = expected == "error" or (expected == "address" and "outside the zone" in str(e))
+        if got != expected or not e2e:
+            mismatches.append((token, expected, got, e2e))
+    assert not mismatches
