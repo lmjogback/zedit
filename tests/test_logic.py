@@ -232,3 +232,22 @@ def test_soa_help_is_comment_only():
     assert "contact: hostmaster@example.com" in text
     m2, soa2 = cli.parse_text(text, ORIGIN)
     assert soa2[0] == soa[0] and set(m2) == set(m)
+
+
+def test_file_stem_is_a_safe_file_name():
+    assert cli.file_stem(dns.name.from_text("Example.COM.")) == "example.com"
+    assert cli.file_stem(dns.name.from_text("16/28.2.0.192.in-addr.arpa.")) == "16_28.2.0.192.in-addr.arpa"
+
+
+def test_origin_directive_inside_zone():
+    o = dns.name.from_text("2.0.192.in-addr.arpa.")
+    text = "$TTL 300\n" + SOA + "$ORIGIN 2.0.192.in-addr.arpa.\n10 PTR www.example.com.\n"
+    m, _ = cli.parse_text(text, o)
+    assert set(m) == {(dns.name.from_text("10", None), int(dns.rdatatype.PTR))}
+
+
+def test_names_outside_zone_are_rejected_not_dropped():
+    # dnspython's reader would silently drop these
+    text = "$TTL 300\n" + SOA + "www A 192.0.2.1\n$ORIGIN example.org.\nfoo A 192.0.2.2\n"
+    with pytest.raises(ValueError, match="foo.example.org"):
+        cli.parse_text(text, ORIGIN)

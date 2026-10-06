@@ -42,16 +42,19 @@ def axfr(port, key):
     return dig(port, key, ZONE, "AXFR")
 
 
+FORWARD = "@ IN NS ns1\nns1 IN A 192.0.2.1\nwww IN A 192.0.2.10\nmail IN A 192.0.2.20\n"
+
+
 @contextlib.contextmanager
-def run_named(tmp_path, signing, serial_update_method=None):
+def run_named(tmp_path, signing, serial_update_method=None, zone=ZONE, records=FORWARD):
     """Start named with ZONE configured as requested; yield (port, key, tmp_path)."""
     port = free_port()
     key = tmp_path / "admin.key"
     key.write_text(subprocess.check_output(["tsig-keygen", "-a", "hmac-sha256", "admin"], text=True))
     (tmp_path / "keys").mkdir()
     (tmp_path / "db.example").write_text(
-        "$TTL 300\n@ 3600 IN SOA ns1 hostmaster 100 7200 900 1209600 300\n"
-        "@ IN NS ns1\nns1 IN A 192.0.2.1\nwww IN A 192.0.2.10\nmail IN A 192.0.2.20\n"
+        "$TTL 300\n@ 3600 IN SOA ns1.example.net. hostmaster.example.net. 100 7200 900 1209600 300\n"
+        + records
     )
     method = f"serial-update-method {serial_update_method};" if serial_update_method else ""
     (tmp_path / "named.conf").write_text(f"""
@@ -59,7 +62,7 @@ include "{key}";
 options {{ directory "{tmp_path}"; key-directory "{tmp_path}/keys";
   listen-on port {port} {{ 127.0.0.1; }}; listen-on-v6 {{ none; }};
   pid-file "{tmp_path}/named.pid"; recursion no; dnssec-validation no; }};
-zone "{ZONE}" {{ type primary; file "{tmp_path}/db.example"; {SIGNING[signing]} {method}
+zone "{zone}" {{ type primary; file "{tmp_path}/db.example"; {SIGNING[signing]} {method}
   allow-transfer {{ key admin; }}; update-policy {{ grant admin zonesub ANY; }}; }};
 """)
     for p in (tmp_path, tmp_path / "keys"):
@@ -72,8 +75,9 @@ zone "{ZONE}" {{ type primary; file "{tmp_path}/db.example"; {SIGNING[signing]} 
     try:
         for _ in range(100):
             try:
-                zone = axfr(port, key)
-                if signing == "unsigned" or any(" DNSKEY " in rr for rr in zone):
+                rrs = dig(port, key, zone, "AXFR")
+                loaded = any(" SOA " in rr for rr in rrs)  # dig exits 0 on SERVFAIL too
+                if loaded and (signing == "unsigned" or any(" DNSKEY " in rr for rr in rrs)):
                     break
             except subprocess.CalledProcessError:
                 pass
@@ -92,7 +96,7 @@ def server(request, tmp_path):
         yield s
 
 
-def run_zedit(port, key, tmp_path, editor, answers, *extra):
+def run_zedit(port, key, tmp_path, editor, answers, *extra, zone=ZONE):
     """Run zedit; key=None means no -k (the default key lookup applies)."""
     env = dict(
         os.environ,
@@ -103,7 +107,7 @@ def run_zedit(port, key, tmp_path, editor, answers, *extra):
     env.pop("ZEDIT_KEYFILE", None)
     keyarg = ["-k", str(key)] if key else []
     args = [sys.executable, "-m", "zedit", "-s", "127.0.0.1", "-p", str(port), *keyarg, *extra]
-    return subprocess.run(args + [ZONE], input=answers, text=True, capture_output=True, env=env)
+    return subprocess.run(args + [zone], input=answers, text=True, capture_output=True, env=env)
 
 
 def write_editor(tmp_path, body):
@@ -264,3 +268,20 @@ def test_default_keyfile_from_config(server):
     r = run_zedit(port, None, tmp, ed, "y\n")
     assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
     assert f"Key: {keys / 'example.com.key'}" in r.stderr
+
+
+def test_rfc2317_zone_with_slash(tmp_path):
+    """Classless reverse zones (RFC 2317) have '/' in their name, which must not
+    end up as a directory in the saved-state or key file paths."""
+    zone = "16/28.2.0.192.in-addr.arpa"
+    records = "@ IN NS ns1.example.net.\n18 IN PTR host18.example.com.\n"
+    with run_named(tmp_path, "unsigned", zone=zone, records=records) as (port, key, tmp):
+        keys = tmp / "config" / "zedit" / "keys"
+        keys.mkdir(parents=True)
+        (keys / "16_28.2.0.192.in-addr.arpa.key").write_text(key.read_text())
+        (keys / "16_28.2.0.192.in-addr.arpa.key").chmod(0o600)
+        ed = write_editor(tmp, "printf '17 PTR host17.example.com.\\n' >> \"$1\"\n")
+        r = run_zedit(port, None, tmp, ed, "y\n", zone=zone)
+        assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+        assert "16_28.2.0.192.in-addr.arpa.key" in r.stderr
+        assert dig(port, key, "17." + zone, "PTR") == {f"17.{zone}. 300 IN PTR host17.example.com."}

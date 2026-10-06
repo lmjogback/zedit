@@ -37,11 +37,14 @@ import dns.exception
 import dns.message
 import dns.name
 import dns.query
+import dns.rdataclass
 import dns.rdataset
 import dns.rdatatype
 import dns.resolver
+import dns.tokenizer
 import dns.tsigkeyring
 import dns.zone
+import dns.zonefile
 
 from zedit import __version__
 
@@ -124,8 +127,33 @@ def fetch(ctx):
     return model, soa, hidden
 
 
+class _Reader(dns.zonefile.Reader):
+    """dnspython's zone file reader silently drops records whose owner name is
+    outside the zone (e.g. after a $ORIGIN pointing elsewhere); _eat_line() is
+    called only on that path. Record the names so they can be reported."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.outside = []
+
+    def _eat_line(self):
+        self.outside.append(self.last_name)
+        super()._eat_line()
+
+
+def read_zone(text, origin):
+    """-> (zone, names outside the zone that the reader dropped)."""
+    zone = dns.zone.Zone(origin, dns.rdataclass.IN, relativize=True)
+    with zone.writer(True) as txn:
+        reader = _Reader(dns.tokenizer.Tokenizer(text, "<edit>"), dns.rdataclass.IN, txn)
+        reader.read()
+    return zone, sorted({n.to_text() for n in reader.outside})
+
+
 def parse_text(text, origin):
-    z = dns.zone.from_text(text, origin=origin, relativize=True, check_origin=False)
+    z, outside = read_zone(text, origin)
+    if outside:
+        raise ValueError(f"names outside the zone {origin} (check $ORIGIN): {', '.join(outside)}")
     m, soa, rejected = to_model(z)
     if rejected:
         bad = ", ".join(sorted({f"{k[0]} {tname(k[1])}" for k in rejected}))
@@ -596,13 +624,20 @@ def config_dir():
     return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "zedit")
 
 
+def file_stem(origin):
+    """The zone name as a safe file name component. RFC 2317 zones such as
+    16/28.2.0.192.in-addr.arpa contain '/', which would become a directory;
+    anything other than letters, digits, '.', '-' and '_' becomes '_'."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", origin.to_text(omit_final_dot=True)).lower()
+
+
 def find_keyfile(origin):
     """Default TSIG key: $ZEDIT_KEYFILE, else ~/.config/zedit/keys/ZONE.key,
-    else ~/.config/zedit/default.key, else None (no TSIG)."""
+    else ~/.config/zedit/default.key, else None (no TSIG). ZONE as in file_stem()."""
     env = os.environ.get("ZEDIT_KEYFILE")
     if env:
         return env
-    zone = origin.to_text(omit_final_dot=True).lower()
+    zone = file_stem(origin)
     for p in (os.path.join(config_dir(), "keys", f"{zone}.key"), os.path.join(config_dir(), "default.key")):
         if os.path.isfile(p):
             return p
@@ -658,7 +693,7 @@ def session(ctx, args):
         need_edit = conflicts > 0
     else:
         base, base_soa, hidden = fetch(ctx)
-        stem = f"{ctx.origin.to_text(omit_final_dot=True)}-{time.strftime('%Y%m%dT%H%M%S')}"
+        stem = f"{file_stem(ctx.origin)}-{time.strftime('%Y%m%dT%H%M%S')}"
         ctx.path = os.path.join(state_dir(), stem + ".zone")
         ctx.basepath = ctx.path + ".base"
         write_atomic(ctx.basepath, render_file(base_soa, base, ctx.origin, ctx.label))

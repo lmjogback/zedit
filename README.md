@@ -67,7 +67,10 @@ When the server or key comes from a default, zedit prints which ones it uses.
 Without `-k`, the first of these that exists is used:
 
 1. `$ZEDIT_KEYFILE`
-2. `~/.config/zedit/keys/ZONE.key` (e.g. `keys/example.com.key`; honours `$XDG_CONFIG_HOME`)
+2. `~/.config/zedit/keys/ZONE.key` (e.g. `keys/example.com.key`; honours `$XDG_CONFIG_HOME`).
+   ZONE is lower-cased, and characters other than letters, digits, `.`, `-` and `_`
+   become `_`, so the RFC 2317 zone `16/28.2.0.192.in-addr.arpa` uses
+   `keys/16_28.2.0.192.in-addr.arpa.key`.
 3. `~/.config/zedit/default.key`
 
 If none exists, zedit runs without TSIG. zedit warns if the key file is readable by
@@ -98,6 +101,10 @@ Use a dedicated admin key, not the one your DHCP server uses for DDNS.
 **Filtered types.** RRSIG, NSEC, NSEC3, NSEC3PARAM, DNSKEY, CDS, CDNSKEY, ZONEMD and
 BIND's private TYPE65534 are removed from both sides of the diff and never
 touched. (Deleting NSEC3PARAM or TYPE65534 through UPDATE would change signing.)
+
+**`$ORIGIN`.** You can use `$ORIGIN` lines in the file, e.g. to add a block of
+PTR records. Every owner name must stay inside the zone; names that fall outside
+it are reported as an error rather than silently ignored.
 
 **Seeing everything.** With `-a` the filtered records are shown in place, as
 comment lines marked `;ro`, each RRSIG right after the type it covers:
