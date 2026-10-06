@@ -106,6 +106,20 @@ touched. (Deleting NSEC3PARAM or TYPE65534 through UPDATE would change signing.)
 PTR records. Every owner name must stay inside the zone; names that fall outside
 it are reported as an error rather than silently ignored.
 
+**`$GENERATE`.** You can add ranges of records with `$GENERATE`, with BIND's
+syntax and semantics: `start-stop[/step]`, several `$` and
+`${offset[,width[,base]]}` modifiers per line (bases `d`, `o`, `x`, `X`, and `n`/`N`
+for `ip6.arpa` nibbles) and `\$` for a literal `$`:
+
+```
+$GENERATE 20-29 $ PTR host$.example.com.
+$GENERATE 30-38/2 $ PTR dyn-${0,3,d}.example.com.
+```
+
+The expansion is done by zedit, not dnspython, whose own `$GENERATE` handles only
+one modifier per side. A dynamic zone stores the generated records, not the
+`$GENERATE` line, so the next edit shows the individual records.
+
 **Seeing everything.** With `-a` the filtered records are shown in place, as
 comment lines marked `;ro`, each RRSIG right after the type it covers:
 

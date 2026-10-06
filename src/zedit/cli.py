@@ -141,12 +141,102 @@ class _Reader(dns.zonefile.Reader):
         super()._eat_line()
 
 
+GENERATE_LINE = re.compile(r"^\$GENERATE[ \t]+(\S+)[ \t]+(\S.*)$", re.IGNORECASE)
+GENERATE_RANGE = re.compile(r"^(\d+)-(\d+)(?:/(\d+))?$")
+GENERATE_TOKEN = re.compile(r"\\.|\$\{([^}]*)\}|\$")
+GENERATE_MAX = 65536
+
+
+def nibbles(value, width, mode):
+    """BIND's ${offset,width,n|N}: hex digits, least significant first, separated
+    by dots (for ip6.arpa); width counts output characters including dots."""
+    digits = "0123456789abcdef" if mode == "n" else "0123456789ABCDEF"
+    out = []
+    while True:
+        out.append(digits[value & 0xF])
+        value >>= 4
+        width = max(width - 1, 0)
+        if width > 0 or value != 0:
+            out.append(".")
+            width = max(width - 1, 0)
+        if value == 0 and width == 0:
+            return "".join(out)
+
+
+def generate_substitute(template, i):
+    """Expand '$', '${offset[,width[,base]]}' in a $GENERATE template, as BIND does.
+    Backslash escapes (e.g. '\\$' for a literal '$') are left for the zone parser."""
+
+    def repl(m):
+        token = m.group(0)
+        if token.startswith("\\"):
+            return token
+        if token == "$":
+            return str(i)
+        fields = m.group(1).split(",")
+        if len(fields) > 3 or not fields[0].strip().lstrip("-").isdigit():
+            raise ValueError(f"bad $GENERATE modifier {token}")
+        offset = int(fields[0])
+        width = int(fields[1]) if len(fields) > 1 and fields[1].strip() else 0
+        base = fields[2].strip() if len(fields) > 2 and fields[2].strip() else "d"
+        value = i + offset
+        if value < 0:
+            raise ValueError(f"$GENERATE modifier {token} gives a negative value")
+        if base in ("d", "o", "x", "X"):
+            return format(value, f"0{width}{base}")
+        if base in ("n", "N"):
+            return nibbles(value, width, base)
+        raise ValueError(f"bad $GENERATE base {base!r} in {token}")
+
+    return GENERATE_TOKEN.sub(repl, template)
+
+
+def expand_generate(text):
+    """Replace $GENERATE lines with the records they generate, following BIND
+    (several '$' and modifiers per side; dnspython's own expansion handles only
+    one modifier and silently leaves the rest as text).
+    -> (expanded text, original line number for each line of the expanded text)."""
+    out, linemap = [], []
+    for n, line in enumerate(text.split("\n"), 1):
+        m = GENERATE_LINE.match(line)
+        if not m:
+            out.append(line)
+            linemap.append(n)
+            continue
+        r = GENERATE_RANGE.match(m.group(1))
+        if not r:
+            raise ValueError(f"line {n}: bad $GENERATE range {m.group(1)!r} (start-stop[/step])")
+        start, stop, step = int(r.group(1)), int(r.group(2)), int(r.group(3) or 1)
+        if stop < start or step < 1 or (stop - start) // step >= GENERATE_MAX:
+            raise ValueError(f"line {n}: bad $GENERATE range {m.group(1)!r}")
+        try:
+            out += [generate_substitute(m.group(2), i) for i in range(start, stop + 1, step)]
+        except ValueError as e:
+            raise ValueError(f"line {n}: {e}") from None
+        linemap += [n] * len(range(start, stop + 1, step))
+    return "\n".join(out), linemap
+
+
 def read_zone(text, origin):
     """-> (zone, names outside the zone that the reader dropped)."""
+    expanded, linemap = expand_generate(text)
     zone = dns.zone.Zone(origin, dns.rdataclass.IN, relativize=True)
-    with zone.writer(True) as txn:
-        reader = _Reader(dns.tokenizer.Tokenizer(text, "<edit>"), dns.rdataclass.IN, txn)
-        reader.read()
+    try:
+        with zone.writer(True) as txn:
+            reader = _Reader(
+                dns.tokenizer.Tokenizer(expanded, "<edit>"),
+                dns.rdataclass.IN,
+                txn,
+                # $GENERATE is expanded above; never let dnspython's version run
+                allow_directives={"$ORIGIN", "$TTL"},
+            )
+            reader.read()
+    except dns.exception.DNSException as e:
+        # Point at the line in the user's file, not in the expanded text
+        m = re.match(r"<edit>:(\d+):\s*(.*)", str(e), re.S)
+        if m and int(m.group(1)) <= len(linemap):
+            raise ValueError(f"line {linemap[int(m.group(1)) - 1]}: {m.group(2)}") from None
+        raise
     return zone, sorted({n.to_text() for n in reader.outside})
 
 

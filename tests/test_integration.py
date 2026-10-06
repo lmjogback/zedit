@@ -285,3 +285,15 @@ def test_rfc2317_zone_with_slash(tmp_path):
         assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
         assert "16_28.2.0.192.in-addr.arpa.key" in r.stderr
         assert dig(port, key, "17." + zone, "PTR") == {f"17.{zone}. 300 IN PTR host17.example.com."}
+
+
+def test_generate_in_reverse_zone(tmp_path):
+    zone = "2.0.192.in-addr.arpa"
+    with run_named(tmp_path, "unsigned", zone=zone, records="@ IN NS ns1.example.net.\n") as (port, key, tmp):
+        add = tmp / "add.txt"
+        add.write_text("$GENERATE 30-34/2 $ PTR dyn-${0,3,d}-${100,0,x}.example.com.\n")
+        ed = write_editor(tmp, f'cat "{add}" >> "$1"\n')
+        r = run_zedit(port, key, tmp, ed, "y\n", zone=zone)
+        assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+        assert "0 delete, 3 add" in r.stdout
+        assert dig(port, key, "32." + zone, "PTR") == {f"32.{zone}. 300 IN PTR dyn-032-84.example.com."}

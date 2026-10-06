@@ -1,3 +1,6 @@
+import shutil
+import subprocess
+
 import dns.exception
 import dns.name
 import dns.zone
@@ -251,3 +254,93 @@ def test_names_outside_zone_are_rejected_not_dropped():
     text = "$TTL 300\n" + SOA + "www A 192.0.2.1\n$ORIGIN example.org.\nfoo A 192.0.2.2\n"
     with pytest.raises(ValueError, match="foo.example.org"):
         cli.parse_text(text, ORIGIN)
+
+
+REV = dns.name.from_text("2.0.192.in-addr.arpa.")
+
+
+def generated(line):
+    text, _ = cli.expand_generate(line)
+    return text.split("\n")
+
+
+@pytest.mark.parametrize(
+    "template, i, expected",
+    [
+        ("host$", 20, "host20"),
+        ("dyn-${0,3,d}-${100,0,x}", 30, "dyn-030-82"),  # several modifiers per side
+        ("h${0,4,X}", 42, "h002A"),
+        ("${-200,3,o}", 250, "062"),
+        ("${0,0,n}", 0x1A, "a.1"),
+        ("${0,7,n}", 0x1A, "a.1.0.0"),  # width counts characters, dots included
+        ("${0,0,N}", 0xFA, "A.F"),
+        (r"x\$y$", 3, r"x\$y3"),  # escapes are left to the zone parser
+    ],
+)
+def test_generate_substitute_like_bind(template, i, expected):
+    assert cli.generate_substitute(template, i) == expected
+
+
+def test_generate_range_and_step():
+    assert generated("$GENERATE 30-34/2 $ PTR h$.example.com.") == [
+        "30 PTR h30.example.com.",
+        "32 PTR h32.example.com.",
+        "34 PTR h34.example.com.",
+    ]
+
+
+@pytest.mark.parametrize(
+    "line, match",
+    [
+        ("$GENERATE 5-1 $ PTR x.", "bad \\$GENERATE range"),
+        ("$GENERATE 1-x $ PTR x.", "bad \\$GENERATE range"),
+        ("$GENERATE 1-2 $ PTR ${0,2,q}", "bad \\$GENERATE base"),
+        ("$GENERATE 1-2 $ PTR ${-5}", "negative"),
+    ],
+)
+def test_generate_errors(line, match):
+    with pytest.raises(ValueError, match=match):
+        cli.expand_generate(line)
+
+
+def test_generate_errors_point_at_the_users_line():
+    text = "$TTL 300\n" + SOA + "$GENERATE 1-50 $ PTR h$.example.com.\nbad line here\n"
+    with pytest.raises(ValueError, match="^line 4:"):
+        cli.parse_text(text, REV)
+
+
+def test_generate_outside_zone_is_rejected():
+    text = "$TTL 300\n" + SOA + "$ORIGIN example.org.\n$GENERATE 1-3 h$ A 192.0.2.$\n"
+    with pytest.raises(ValueError, match="h1.example.org.*h2.example.org.*h3.example.org"):
+        cli.parse_text(text, REV)
+
+
+@pytest.mark.skipif(not shutil.which("named-checkzone"), reason="named-checkzone not found")
+def test_generate_matches_named_checkzone(tmp_path):
+    zone = (
+        "$TTL 300\n@ 3600 IN SOA ns1.example.net. hostmaster.example.net. 1 7200 900 1209600 300\n"
+        "@ IN NS ns1.example.net.\n"
+        "$GENERATE 20-23 $ PTR host$.example.com.\n"
+        "$GENERATE 30-34/2 $ PTR dyn-${0,3,d}-${100,0,x}.example.com.\n"
+        "$GENERATE 40-42 ${0,0,d} PTR h${0,4,X}-$.example.com.\n"
+        "$GENERATE 1-3 w$ CNAME x\\$y$\n"
+        "$GENERATE 250-254 n$ TXT ${0,5,n}-${0,0,N}-${-200,3,o}\n"
+    )
+    f = tmp_path / "z"
+    f.write_text(zone)
+    out = subprocess.check_output(
+        ["named-checkzone", "-q", "-D", "-o", "-", REV.to_text(), str(f)], text=True
+    )
+    bind = set()
+    for line in out.splitlines():
+        name, _ttl, cls, rtype, rdata = line.split(None, 4)
+        if rtype not in ("SOA", "NS"):
+            bind.add(f"{name} {cls} {rtype} {rdata}")
+    m, _ = cli.parse_text(zone, REV)
+    ours = {
+        f"{n.derelativize(REV)} IN {cli.tname(t)} {rd.to_text(origin=REV, relativize=False)}"
+        for (n, t), rds in m.items()
+        if cli.tname(t) != "NS"
+        for rd in rds
+    }
+    assert len(bind) == 18 and ours == bind
