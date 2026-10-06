@@ -13,9 +13,18 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-for tool in ("named", "nsupdate", "tsig-keygen", "dig"):
-    if not shutil.which(tool):
-        pytest.skip(f"{tool} not found", allow_module_level=True)
+# named and tsig-keygen live in /usr/sbin, which isn't in an ordinary user's
+# PATH on Debian, so look there too.
+SBIN = os.pathsep.join(["/usr/local/sbin", "/usr/sbin", "/sbin"])
+
+
+def find_tool(name):
+    return shutil.which(name) or shutil.which(name, path=SBIN)
+
+
+TOOLS = {name: find_tool(name) for name in ("named", "nsupdate", "tsig-keygen", "dig")}
+if missing := [name for name, path in TOOLS.items() if not path]:
+    pytest.skip(f"not found: {', '.join(missing)}", allow_module_level=True)
 
 ZONE = "example.com"
 SIGNING = {
@@ -33,7 +42,7 @@ def free_port():
 
 def dig(port, key, *args):
     out = subprocess.check_output(
-        ["dig", "+noall", "+answer", "-p", str(port), "@127.0.0.1", "-k", str(key), *args], text=True
+        [TOOLS["dig"], "+noall", "+answer", "-p", str(port), "@127.0.0.1", "-k", str(key), *args], text=True
     )
     return {" ".join(line.split()) for line in out.splitlines()}
 
@@ -50,7 +59,7 @@ def run_named(tmp_path, signing, serial_update_method=None, zone=ZONE, records=F
     """Start named with ZONE configured as requested; yield (port, key, tmp_path)."""
     port = free_port()
     key = tmp_path / "admin.key"
-    key.write_text(subprocess.check_output(["tsig-keygen", "-a", "hmac-sha256", "admin"], text=True))
+    key.write_text(subprocess.check_output([TOOLS["tsig-keygen"], "-a", "hmac-sha256", "admin"], text=True))
     (tmp_path / "keys").mkdir()
     (tmp_path / "db.example").write_text(
         "$TTL 300\n@ 3600 IN SOA ns1.example.net. hostmaster.example.net. 100 7200 900 1209600 300\n"
@@ -68,7 +77,7 @@ zone "{zone}" {{ type primary; file "{tmp_path}/db.example"; {SIGNING[signing]} 
     for p in (tmp_path, tmp_path / "keys"):
         os.chmod(p, 0o777)
     proc = subprocess.Popen(
-        ["named", "-g", "-c", str(tmp_path / "named.conf")],
+        [TOOLS["named"], "-g", "-c", str(tmp_path / "named.conf")],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
@@ -100,14 +109,19 @@ def run_zedit(port, key, tmp_path, editor, answers, *extra, zone=ZONE):
     """Run zedit; key=None means no -k (the default key lookup applies)."""
     env = dict(
         os.environ,
+        PATH=os.pathsep.join([os.path.dirname(TOOLS["nsupdate"]), os.environ.get("PATH", "")]),
         EDITOR=str(editor),
         XDG_STATE_HOME=str(tmp_path / "state"),
         XDG_CONFIG_HOME=str(tmp_path / "config"),
     )
+    # zedit prefers $VISUAL over $EDITOR; a developer's VISUAL (e.g. nvim) would
+    # otherwise be started instead of the test editor and hang without a terminal.
+    env.pop("VISUAL", None)
     env.pop("ZEDIT_KEYFILE", None)
     keyarg = ["-k", str(key)] if key else []
     args = [sys.executable, "-m", "zedit", "-s", "127.0.0.1", "-p", str(port), *keyarg, *extra]
-    return subprocess.run(args + [zone], input=answers, text=True, capture_output=True, env=env)
+    # A timeout turns anything waiting for a terminal into a failure instead of a hang
+    return subprocess.run(args + [zone], input=answers, text=True, capture_output=True, env=env, timeout=120)
 
 
 def write_editor(tmp_path, body):

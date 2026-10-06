@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 
@@ -315,7 +316,12 @@ def test_generate_outside_zone_is_rejected():
         cli.parse_text(text, REV)
 
 
-@pytest.mark.skipif(not shutil.which("named-checkzone"), reason="named-checkzone not found")
+NAMED_CHECKZONE = shutil.which("named-checkzone") or shutil.which(
+    "named-checkzone", path=os.pathsep.join(["/usr/local/sbin", "/usr/sbin", "/sbin"])
+)
+
+
+@pytest.mark.skipif(not NAMED_CHECKZONE, reason="named-checkzone not found")
 def test_generate_matches_named_checkzone(tmp_path):
     zone = (
         "$TTL 300\n@ 3600 IN SOA ns1.example.net. hostmaster.example.net. 1 7200 900 1209600 300\n"
@@ -328,9 +334,7 @@ def test_generate_matches_named_checkzone(tmp_path):
     )
     f = tmp_path / "z"
     f.write_text(zone)
-    out = subprocess.check_output(
-        ["named-checkzone", "-q", "-D", "-o", "-", REV.to_text(), str(f)], text=True
-    )
+    out = subprocess.check_output([NAMED_CHECKZONE, "-q", "-D", "-o", "-", REV.to_text(), str(f)], text=True)
     bind = set()
     for line in out.splitlines():
         name, _ttl, cls, rtype, rdata = line.split(None, 4)
