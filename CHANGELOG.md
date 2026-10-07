@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 - 2026-10-07
 
 - Fix: if the zone transfer used to verify an update failed, zedit exited
   with status 1 as if nothing had been sent, although the update was applied.
@@ -18,6 +18,14 @@
 - An editor that can't be started, an invalid zone name, a damaged `.base`
   file or an unwritable state directory now give an error message instead of
   a Python traceback.
+- Fix: `zedit --version` in release 1.0.4 reported 1.0.3.
+- README: describes the one narrow case the per-RRset lock can't detect, a
+  concurrent change of only an RRset's TTL.
+- dnspython must now be below 3: zedit relies on internals of its zone file
+  reader, which a new major version may change.
+- Development: CI checks that the version, the changelog and the release tag
+  agree, and runs the unit tests with the oldest allowed dependency versions.
+  `AGENTS.md` has notes for coding agents.
 
 ## 1.0.4 - 2026-10-06
 
