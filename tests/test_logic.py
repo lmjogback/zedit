@@ -645,3 +645,22 @@ def test_verify_reports_failed_transfer(monkeypatch):
 def test_verify_retries_after_failed_transfer(monkeypatch):
     edited = model("www A 192.0.2.11\n")
     assert verify_with(monkeypatch, [cli.ZeditError("AXFR failed: timed out"), edited]) == []
+
+
+def test_dnspython_reader_hook():
+    """zedit relies on private dnspython API: dns.zonefile.Reader calls _eat_line()
+    when it drops a record outside the zone, with the owner in last_name (see
+    cli._Reader). If this fails after a dnspython upgrade, that API has changed
+    and records outside the zone would again be silently ignored."""
+    text = (
+        SOA
+        + "www 300 IN A 192.0.2.10\n"
+        + "other.example.net. 300 IN A 192.0.2.11\n"
+        + "$ORIGIN elsewhere.org.\n"
+        + "host 300 IN A 192.0.2.12\n"
+        + "$ORIGIN example.com.\n"
+        + "mail 300 IN A 192.0.2.20\n"
+    )
+    zone, outside = cli.read_zone(text, ORIGIN)
+    assert outside == ["host.elsewhere.org.", "other.example.net."]
+    assert {n.to_text() for n in zone.nodes} == {"@", "www", "mail"}

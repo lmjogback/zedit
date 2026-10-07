@@ -44,6 +44,17 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
 
+  lowest:
+    # The oldest dependency versions pyproject.toml allows (dnspython 2.4), which
+    # the lockfile never tests. zedit uses private dnspython API (cli._Reader).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.10"
+      - run: uv run --resolution lowest-direct pytest -v tests/test_logic.py
+
   test:
     runs-on: ubuntu-latest
     strategy:

@@ -8,7 +8,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
-    "dnspython>=2.4",
+    "dnspython>=2.4,<3",
 ]
 keywords = ["dns", "nsupdate", "rfc2136", "bind", "axfr", "dnssec"]
 classifiers = [
