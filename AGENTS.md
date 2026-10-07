@@ -9,6 +9,8 @@ lists what the code doesn't tell you.
   start a real BIND and need `named`, `nsupdate`, `tsig-keygen` and `dig`
   (also looked for in `/usr/sbin`). If any is missing, the whole module is
   skipped, so check the skip summary: a green run may not have touched BIND.
+  With `ZEDIT_REQUIRE_INTEGRATION=1` (set in CI) a skip is a failure instead,
+  and if named doesn't start, the end of its log is in the message.
 - To test with the oldest allowed dependency versions, as CI's `lowest` job
   does, run
   `uv run --isolated --python 3.10 --resolution lowest-direct pytest tests/test_logic.py`.
