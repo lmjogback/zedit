@@ -38,3 +38,10 @@ guards this. Check it before raising the `dnspython<3` bound.
 
 CI's `version` job fails if these disagree, but only after a push. Tagging and
 pushing are left to the maintainer.
+
+## CI
+
+The actions in `.github/workflows/ci.yml` are pinned by commit SHA with the
+version as a comment (`@<sha> # v7.0.1`). Keep that form when changing them;
+Dependabot (`.github/dependabot.yml`) proposes updates weekly. Check a SHA with
+`gh api repos/OWNER/ACTION/commits/TAG -q .sha`.

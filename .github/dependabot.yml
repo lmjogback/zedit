@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # The actions in .github/workflows, pinned by commit SHA with the version as
+  # a comment. Dependabot updates both.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week after a release, so a compromised one is likely found first
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
