@@ -15,6 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          cache-suffix: ${{ github.job }}
       - name: uv.lock matches pyproject.toml
         run: uv lock --check
       - name: Version, changelog and tag agree
@@ -44,6 +46,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          cache-suffix: ${{ github.job }}
       - run: uv run ruff check .
       - run: uv run ruff format --check .
 
@@ -55,6 +59,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          cache-suffix: ${{ github.job }}
           python-version: "3.10"
       - run: uv run --isolated --resolution lowest-direct pytest -v tests/test_logic.py
 
@@ -73,6 +78,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          cache-suffix: ${{ github.job }}
           python-version: ${{ matrix.python }}
       - name: Install BIND for integration tests
         run: |
