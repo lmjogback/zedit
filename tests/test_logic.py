@@ -880,3 +880,23 @@ def test_sessions_in_the_same_second_get_their_own_files(tmp_path, monkeypatch):
     assert os.path.basename(first) == "example.com-20261007T120000.zone"
     assert os.path.basename(second) == "example.com-20261007T120000-2.zone"
     assert os.path.exists(first) and os.path.exists(second)  # created, so reserved
+
+
+KEY = 'key "{name}" {{\n\talgorithm hmac-sha256;\n\tsecret "c2VjcmV0c2VjcmV0c2VjcmV0";\n}};\n'
+
+
+def test_key_file_with_one_key(tmp_path):
+    f = tmp_path / "admin.key"
+    f.write_text(KEY.format(name="admin"))
+    keyring, keyname = cli.load_bind_key(str(f))
+    assert keyname == cli.dns.name.from_text("admin") and keyname in keyring
+
+
+def test_key_file_with_several_keys_is_an_error(tmp_path, capsys):
+    """nsupdate -k refuses a file with more than one key, so this fails at start
+    instead of after editing."""
+    f = tmp_path / "two.key"
+    f.write_text(KEY.format(name="admin") + KEY.format(name="other"))
+    with pytest.raises(SystemExit):
+        cli.load_bind_key(str(f))
+    assert "has 2 key statements (admin, other)" in capsys.readouterr().err

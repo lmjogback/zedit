@@ -78,7 +78,8 @@ Without `-k`, the first of these that exists is used:
 3. `~/.config/zedit/default.key`
 
 If none exists, zedit runs without TSIG. zedit warns if the key file is readable by
-group or others.
+group or others. A key file must hold a single key, since `nsupdate` refuses
+files with more than one.
 
 ```sh
 mkdir -p ~/.config/zedit/keys && chmod 700 ~/.config/zedit

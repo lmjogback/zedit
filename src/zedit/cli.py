@@ -84,14 +84,21 @@ def die(msg, code=1):
 # ---------------------------------------------------------------- TSIG
 
 
+KEY_STATEMENT = re.compile(r'key\s+"?([^"\s{]+)"?\s*\{(.*?)\}\s*;', re.S)
+
+
 def load_bind_key(path):
     """Read a key in tsig-keygen / named.conf format."""
     with open(path) as f:
         text = f.read()
-    m = re.search(r'key\s+"?([^"\s{]+)"?\s*\{(.*?)\}\s*;', text, re.S)
-    if not m:
+    keys = KEY_STATEMENT.findall(text)
+    if not keys:
         die(f"no key statement found in {path}")
-    name, body = m.groups()
+    if len(keys) > 1:
+        # zedit would use the first for AXFR, but nsupdate -k refuses the file
+        names = ", ".join(name for name, _ in keys)
+        die(f"{path} has {len(keys)} key statements ({names}); nsupdate accepts only one key per file")
+    ((name, body),) = keys
     alg = re.search(r'algorithm\s+"?([\w.-]+)"?\s*;', body)
     sec = re.search(r'secret\s+"([^"]+)"\s*;', body)
     if not (alg and sec):

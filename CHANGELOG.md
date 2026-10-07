@@ -19,6 +19,8 @@
 - Fix: two sessions for the same zone started within the same second shared
   their saved files, so one overwrote the other's edit. Session files are now
   created exclusively, numbered `-2`, `-3` … if the name is taken.
+- A key file with more than one key statement is now an error at start.
+  `nsupdate` refuses such a file, so the update used to fail only after editing.
 
 ## 1.2.0 - 2026-10-07
 
