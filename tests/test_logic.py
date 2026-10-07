@@ -868,3 +868,15 @@ def test_apex_ns_cannot_all_be_removed(tmp_path):
     f.write_text("$TTL 300\n" + SOA + "www A 192.0.2.10\n")
     with pytest.raises(ValueError, match="apex needs at least one NS"):
         cli.parse_file(str(f), ORIGIN, base_soa)
+
+
+def test_sessions_in_the_same_second_get_their_own_files(tmp_path, monkeypatch):
+    """Two sessions for the same zone started within one second must not share
+    (and overwrite) the saved .zone and .base files."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.time, "strftime", lambda fmt, *a: "20261007T120000")
+    first, second = cli.new_session_path(ORIGIN), cli.new_session_path(ORIGIN)
+    assert first != second
+    assert os.path.basename(first) == "example.com-20261007T120000.zone"
+    assert os.path.basename(second) == "example.com-20261007T120000-2.zone"
+    assert os.path.exists(first) and os.path.exists(second)  # created, so reserved

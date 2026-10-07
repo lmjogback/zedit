@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import difflib
 import ipaddress
+import itertools
 import os
 import re
 import shlex
@@ -1046,6 +1047,21 @@ def resume_command(args, path):
     return shlex.join([*cmd, "--resume", path, args.zone])
 
 
+def new_session_path(origin):
+    """A new session file ZONE-TIMESTAMP.zone in the state directory, created
+    empty and exclusively, so that two sessions for the same zone started within
+    the same second don't share (and overwrite) one: the second one gets
+    ZONE-TIMESTAMP-2.zone, and so on."""
+    stem = os.path.join(state_dir(), f"{file_stem(origin)}-{time.strftime('%Y%m%dT%H%M%S')}")
+    for n in itertools.count(1):
+        path = f"{stem}.zone" if n == 1 else f"{stem}-{n}.zone"
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        except FileExistsError:
+            continue
+        return path
+
+
 def hint(ctx, args, dry_run=False):
     if ctx.path and os.path.exists(ctx.path):
         how = "Send them with" if dry_run else "Resume with"
@@ -1085,8 +1101,7 @@ def session(ctx, args):
         need_edit = conflicts > 0
     else:
         base, base_soa, hidden = fetch(ctx)
-        stem = f"{file_stem(ctx.origin)}-{time.strftime('%Y%m%dT%H%M%S')}"
-        ctx.path = os.path.join(state_dir(), stem + ".zone")
+        ctx.path = new_session_path(ctx.origin)
         ctx.basepath = ctx.path + ".base"
         write_atomic(ctx.basepath, render_file(base_soa, base, ctx.origin, ctx.label))
         write_atomic(

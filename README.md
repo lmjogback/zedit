@@ -248,10 +248,12 @@ Rebasing after a timeout is safe: changes that did get applied simply drop out.
 
 **Saved state.** Each session is stored in `$XDG_STATE_HOME/zedit/`
 (default `~/.local/state/zedit/`) as `ZONE-TIMESTAMP.zone` plus
-`ZONE-TIMESTAMP.zone.base` (the zone as transferred). Both are removed after a
-successful, verified update. On abort or failure, including answering no to
-`Send?`, zedit prints a `--resume` command. So does `--dry-run`: resume without
-`--dry-run` to send the same edit, rebased onto the zone as it is then.
+`ZONE-TIMESTAMP.zone.base` (the zone as transferred); a session started in the
+same second as another one for the zone gets `ZONE-TIMESTAMP-2.zone`, and so on.
+Both are removed after a successful, verified update. On abort or failure,
+including answering no to `Send?`, zedit prints a `--resume` command. So does
+`--dry-run`: resume without `--dry-run` to send the same edit, rebased onto the
+zone as it is then.
 
 **Exit status.** 0 success (or nothing to do), 1 error or aborted edit,
 2 update rejected or aborted, 3 update accepted but not verified, 130 interrupted.

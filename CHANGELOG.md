@@ -16,6 +16,9 @@
   reported it as not verified, but the zone had changed. At the apex NS, new
   records are now added before old ones are deleted. Removing every apex NS
   record is an error in the editor.
+- Fix: two sessions for the same zone started within the same second shared
+  their saved files, so one overwrote the other's edit. Session files are now
+  created exclusively, numbered `-2`, `-3` … if the name is taken.
 
 ## 1.2.0 - 2026-10-07
 
