@@ -776,20 +776,27 @@ def verify(ctx, base, new, base_soa, new_soa, attempts=10):
     changed = [k for k in set(base) | set(new) if not same(base.get(k), new.get(k))]
     bad = []
     for i in range(attempts):
-        after, after_soa, _ = fetch(ctx)
-        bad = [
-            f"{k[0]} {tname(k[1])}"
-            for k in sorted(changed, key=sortkey)
-            if not same(after.get(k), new.get(k))
-        ]
-        if soa_changed(base_soa, new_soa):
-            bad += [
-                f"SOA {f.upper()}" for f in SOA_EDITABLE if getattr(after_soa[0], f) != getattr(new_soa[0], f)
+        try:
+            after, after_soa, _ = fetch(ctx)
+        except ZeditError as e:
+            # The update was sent, so this is "not verified" (exit 3), not a plain error; retry
+            bad = [f"(zone transfer for verification failed: {e})"]
+        else:
+            bad = [
+                f"{k[0]} {tname(k[1])}"
+                for k in sorted(changed, key=sortkey)
+                if not same(after.get(k), new.get(k))
             ]
-            if not LOCK_SOA_TTL and after_soa.ttl != new_soa.ttl:
-                bad.append("SOA record TTL")
-        if not bad:
-            return []
+            if soa_changed(base_soa, new_soa):
+                bad += [
+                    f"SOA {f.upper()}"
+                    for f in SOA_EDITABLE
+                    if getattr(after_soa[0], f) != getattr(new_soa[0], f)
+                ]
+                if not LOCK_SOA_TTL and after_soa.ttl != new_soa.ttl:
+                    bad.append("SOA record TTL")
+            if not bad:
+                return []
         time.sleep(min(0.25 * 2**i, 2))
     return bad
 
@@ -1014,7 +1021,7 @@ def session(ctx, args):
             missing = verify(ctx, base, new, base_soa, new_soa)
             if missing:
                 print(
-                    "Update accepted, but the server does not show these changes:\n  "
+                    "Update accepted, but could not be verified:\n  "
                     + "\n  ".join(missing)
                     + "\nCheck the server log (e.g. CNAME conflicts, dnssec-policy max-zone-ttl).",
                     file=sys.stderr,

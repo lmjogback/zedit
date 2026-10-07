@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fix: if the zone transfer used to verify an update failed, zedit exited
+  with status 1 as if nothing had been sent, although the update was applied.
+  A failed transfer is now retried like a mismatch, and if it keeps failing
+  zedit reports the update as not verified (exit status 3).
+
 ## 1.0.4 - 2026-10-06
 
 - Fix: in ip6.arpa zones, owners made of four single-digit nibbles (such as

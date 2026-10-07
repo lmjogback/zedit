@@ -618,3 +618,30 @@ def test_owner_sweep(zone):
         if got != expected or not e2e:
             mismatches.append((token, expected, got, e2e))
     assert not mismatches
+
+
+def verify_with(monkeypatch, results):
+    """Run cli.verify() with fetch() returning (or raising) each of results in turn."""
+    calls = iter(results)
+
+    def fetch(ctx):
+        r = next(calls)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    monkeypatch.setattr(cli, "fetch", fetch)
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    base, base_soa, _ = model("www A 192.0.2.10\n")
+    new, new_soa, _ = model("www A 192.0.2.11\n")
+    return cli.verify(None, base, new, base_soa, new_soa, attempts=len(results))
+
+
+def test_verify_reports_failed_transfer(monkeypatch):
+    bad = verify_with(monkeypatch, [cli.ZeditError("AXFR failed: refused")] * 3)
+    assert len(bad) == 1 and "transfer for verification failed" in bad[0] and "refused" in bad[0]
+
+
+def test_verify_retries_after_failed_transfer(monkeypatch):
+    edited = model("www A 192.0.2.11\n")
+    assert verify_with(monkeypatch, [cli.ZeditError("AXFR failed: timed out"), edited]) == []

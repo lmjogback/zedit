@@ -200,7 +200,7 @@ that receives the UPDATE.
 checks that every changed RRset matches your edit. BIND silently drops some
 updates, e.g. an add that violates the CNAME rule, an SOA with a non-greater
 serial, or TTLs above a `dnssec-policy` `max-zone-ttl`. Mismatches are listed
-and zedit exits with status 3.
+and zedit exits with status 3, as it does if the zone can't be transferred again.
 
 **Rebase.** On NXRRSET/YXRRSET (or an `nsupdate` timeout) you can rebase. zedit does a
 new AXFR and merges per RRset:
