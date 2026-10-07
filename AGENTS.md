@@ -18,7 +18,8 @@ lists what the code doesn't tell you.
 ## When you change behaviour
 
 - Add a line under `## Unreleased` at the top of CHANGELOG.md.
-- Keep README.md in step: options table, exit statuses, "Behaviour" section.
+- Keep README.md in step: options table, exit statuses, "Behaviour" section;
+  and docs/signaling.md for anything about CDS/CDNSKEY or signals.
 - A new command-line option also goes into `resume_command()` in
   `src/zedit/cli.py` (if it should carry over to `--resume`) and into
   `test_resume_command_keeps_the_options`. Nothing catches a forgotten one.

@@ -107,6 +107,12 @@ private TYPE65534 are removed from both sides of the diff and never touched, and
 so are CDS and CDNSKEY at the zone's apex, where BIND maintains them. (Deleting
 NSEC3PARAM or TYPE65534 through UPDATE would change signing.)
 
+**Bootstrapping signals.** Below the apex, CDS and CDNSKEY are ordinary records,
+so a DNS operator can publish RFC 9615 signals (`_dsboot.CHILD._signal.NS-HOST`)
+that let a registry turn on DNSSEC for a child zone. zedit warns if such a record
+is not at a `_dsboot` name. See [docs/signaling.md](docs/signaling.md) for how
+signals work and how to set them up with BIND.
+
 **`$ORIGIN`.** You can use `$ORIGIN` lines in the file, e.g. to add a block of
 PTR records. Every owner name must stay inside the zone; names that fall outside
 it are reported as an error rather than silently ignored.

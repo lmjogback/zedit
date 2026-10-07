@@ -5,6 +5,7 @@
 - CDS and CDNSKEY records can now be edited below the zone's apex, so DNS
   operators can publish RFC 9615 DNSSEC bootstrapping signals. At the apex they
   stay read-only. zedit warns if such a record is not at a `_dsboot` name.
+  New guide: `docs/signaling.md`.
 - Fix: a server with an AAAA record couldn't be reached when IPv6 doesn't
   work, since zedit used only the first address. It now connects with Happy
   Eyeballs (RFC 8305) and uses the first address that answers.
