@@ -217,10 +217,11 @@ def test_dry_run_keeps_session_for_resume(server):
     r = run_zedit(port, key, tmp, ed, "y\n", "--dry-run")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "update add www.example.com. 300 IN A 192.0.2.12" in r.stdout
-    assert "without --dry-run" in r.stderr and "--resume" in r.stderr
-    assert dig(port, key, "www." + ZONE, "A") == {"www.example.com. 300 IN A 192.0.2.10"}
     (saved,) = [f for f in saved_files(tmp) if f.endswith(".zone")]
-    r = run_zedit(port, key, tmp, "true", "y\n", "--resume", str(tmp / "state" / "zedit" / saved))
+    path = tmp / "state" / "zedit" / saved
+    assert f"Send them with: zedit -s 127.0.0.1 -p {port} -k {key} --resume {path} {ZONE}\n" in r.stderr
+    assert dig(port, key, "www." + ZONE, "A") == {"www.example.com. 300 IN A 192.0.2.10"}
+    r = run_zedit(port, key, tmp, "true", "y\n", "--resume", str(path))
     assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
     assert dig(port, key, "www." + ZONE, "A") == {"www.example.com. 300 IN A 192.0.2.12"}
     assert not saved_files(tmp)

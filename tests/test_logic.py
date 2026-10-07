@@ -1,4 +1,5 @@
 import os
+import shlex
 import shutil
 import subprocess
 
@@ -691,3 +692,25 @@ def test_failing_editor_aborts_or_edits_again(monkeypatch, tmp_path):
     script.chmod(0o755)
     m, _ = editor_session(monkeypatch, tmp_path, str(script), ["e"])
     assert addrs(m, "www") == ["192.0.2.10"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["example.com"],
+        ["-s", "ns1.example.net", "-p", "5353", "-k", "/keys/my admin.key", "-a", "-A", "-n", "example.com"],
+        ["--no-rrsig", "-r", "/old/session.zone", "2.0.192.in-addr.arpa"],
+    ],
+)
+def test_resume_command_keeps_the_options(argv):
+    """The printed command parses to the same options, with --dry-run dropped
+    and --resume pointing at the session."""
+    parser = cli.make_parser()
+    args = parser.parse_args(argv)
+    cmd = shlex.split(cli.resume_command(args, "/state/ex ample.zone"))
+    assert cmd[0] == "zedit"
+    again = parser.parse_args(cmd[1:])
+    expected = {**vars(args), "dry_run": False, "resume": "/state/ex ample.zone"}
+    if args.no_rrsig:
+        expected["show_all"] = False  # implied by --no-rrsig, not repeated
+    assert vars(again) == expected

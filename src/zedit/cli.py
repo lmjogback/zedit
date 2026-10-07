@@ -931,14 +931,31 @@ def state_dir():
     return d
 
 
-def hint(ctx, dry_run=False):
+def resume_command(args, path):
+    """The command line that resumes the session in path: the options given on
+    this command line, without --dry-run and an earlier --resume."""
+    cmd = ["zedit"]
+    if args.server:
+        cmd += ["-s", args.server]
+    if args.port != 53:
+        cmd += ["-p", str(args.port)]
+    if args.keyfile:
+        cmd += ["-k", args.keyfile]
+    if args.no_rrsig:
+        cmd.append("--no-rrsig")
+    elif args.show_all:
+        cmd.append("-a")
+    if args.addresses:
+        cmd.append("-A")
+    return shlex.join([*cmd, "--resume", path, args.zone])
+
+
+def hint(ctx, args, dry_run=False):
     if ctx.path and os.path.exists(ctx.path):
-        how = (
-            "Send them with: zedit [same options, without --dry-run]"
-            if dry_run
-            else "Resume with: zedit [same options]"
+        how = "Send them with" if dry_run else "Resume with"
+        print(
+            f"Your changes are saved in {ctx.path}\n{how}: {resume_command(args, ctx.path)}", file=sys.stderr
         )
-        print(f"Your changes are saved in {ctx.path}\n{how} --resume {ctx.path}", file=sys.stderr)
 
 
 def cleanup(ctx):
@@ -1029,7 +1046,7 @@ def session(ctx, args):
         if args.dry_run:
             print(make_script(ctx, *plan))
             print("Nothing sent (--dry-run).")
-            hint(ctx, dry_run=True)
+            hint(ctx, args, dry_run=True)
             return 0
 
         ok, out, can_rebase = run_nsupdate(make_script(ctx, *plan), ctx.keyfile)
@@ -1057,7 +1074,7 @@ def session(ctx, args):
         need_edit = conflicts > 0  # conflicts -> straight to the editor, otherwise diff first
 
 
-def main():
+def make_parser():
     ap = argparse.ArgumentParser(
         prog="zedit", description="Edit a dynamic DNS zone via AXFR + $EDITOR + nsupdate"
     )
@@ -1090,7 +1107,11 @@ def main():
     ap.add_argument("-n", "--dry-run", action="store_true", help="show the nsupdate script, send nothing")
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("-r", "--resume", metavar="FILE", help="resume a saved edit (requires FILE.base)")
-    args = ap.parse_args()
+    return ap
+
+
+def main():
+    args = make_parser().parse_args()
 
     try:
         origin = dns.name.from_text(args.zone)
@@ -1129,7 +1150,7 @@ def main():
         print(f"zedit: {e}", file=sys.stderr)
         rc = 1
     if rc:
-        hint(ctx)
+        hint(ctx, args)
     sys.exit(rc)
 
 

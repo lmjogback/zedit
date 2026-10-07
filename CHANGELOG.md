@@ -11,6 +11,8 @@
   documented, and prints the `--resume` command.
 - `--dry-run` keeps the session and prints a `--resume` command, so the edit
   can be sent later without editing it again.
+- The `--resume` command zedit prints is now complete, with the options you
+  gave (except `--dry-run`), ready to copy and paste.
 - If the editor exits with a non-zero status (such as vim's `:cq`), zedit
   asks whether to edit again or abort instead of carrying on.
 - An editor that can't be started, an invalid zone name, a damaged `.base`
