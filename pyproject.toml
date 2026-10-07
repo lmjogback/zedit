@@ -1,6 +1,6 @@
 [project]
 name = "zedit"
-version = "1.1.0"
+version = "1.2.0"
 description = "Edit a dynamic DNS zone like a zone file: AXFR, $EDITOR, semantic diff, atomic nsupdate with three-way rebase"
 readme = "README.md"
 authors = [{ name = "LM Jogbäck" }]

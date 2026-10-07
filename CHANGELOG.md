@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - 2026-10-07
 
 - CDS and CDNSKEY records can now be edited below the zone's apex, so DNS
   operators can publish RFC 9615 DNSSEC bootstrapping signals. At the apex they
@@ -10,6 +10,14 @@
   work, since zedit used only the first address. It now connects with Happy
   Eyeballs (RFC 8305) and uses the first address that answers.
 - The diff is no longer coloured when `NO_COLOR` is set (https://no-color.org).
+- README: zedit uses only AXFR and UPDATE with TSIG and should work with any
+  server that supports them; it is tested with BIND 9.20.
+- Development: the CI actions run on Node 24, are pinned by commit SHA and
+  are kept up to date by Dependabot. CI also tests on Ubuntu 26.04, treats a
+  skipped integration test as a failure, and can be started by hand on any
+  branch. The integration tests are more robust (dig over TCP, ports free for
+  both TCP and UDP, TSIG keys that Ubuntu 26.04's AppArmor profile for dig
+  allows). uv_build 0.12 is allowed as build backend.
 
 ## 1.1.0 - 2026-10-07
 
