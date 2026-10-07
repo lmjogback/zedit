@@ -55,10 +55,9 @@ For a child zone `example.com` with the name servers `ns1.example.net` and
 - Very long child or name server names can't be used, since the signal's name
   must fit within DNS name length limits.
 
-Which parents act on signals changes over time. In October 2026 the registries
-for `.ch` and `.li` documented support, as does the registrar Glauca. The
-[cds-updates list](https://github.com/oskar456/cds-updates) tracks registries,
-registrars and DNS providers.
+Not every registry or registrar acts on signals; check with the child's
+registry or registrar. The community-maintained
+[cds-updates list](https://github.com/oskar456/cds-updates) tracks which ones do.
 
 zedit lets you add, change and remove CDS and CDNSKEY records **below** a zone's
 apex, which is where signals live. At the apex they remain read-only, since BIND
