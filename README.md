@@ -102,9 +102,10 @@ Use a dedicated admin key, not the one your DHCP server uses for DDNS.
 
 ## Behaviour
 
-**Filtered types.** RRSIG, NSEC, NSEC3, NSEC3PARAM, DNSKEY, CDS, CDNSKEY, ZONEMD and
-BIND's private TYPE65534 are removed from both sides of the diff and never
-touched. (Deleting NSEC3PARAM or TYPE65534 through UPDATE would change signing.)
+**Filtered types.** RRSIG, NSEC, NSEC3, NSEC3PARAM, DNSKEY, ZONEMD and BIND's
+private TYPE65534 are removed from both sides of the diff and never touched, and
+so are CDS and CDNSKEY at the zone's apex, where BIND maintains them. (Deleting
+NSEC3PARAM or TYPE65534 through UPDATE would change signing.)
 
 **`$ORIGIN`.** You can use `$ORIGIN` lines in the file, e.g. to add a block of
 PTR records. Every owner name must stay inside the zone; names that fall outside

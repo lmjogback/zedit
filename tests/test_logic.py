@@ -756,3 +756,37 @@ def test_resolve_fails_when_nothing_answers(capsys):
         with pytest.raises(SystemExit):
             cli.resolve("127.0.0.1", closed)
     assert "cannot connect to 127.0.0.1 port" in capsys.readouterr().err
+
+
+CDS_RDATA = "28889 13 2 5859EF0BDC217560D43AA3133526503E4428B6809CCE400FB0B27D74136B41D8"
+CDNSKEY_RDATA = (
+    "257 3 13 ZxTaTTbQHRgbrjhjiThNK5sSqDC2Wu+zPitbVcMjo7mW22++S5bioe1/zicKEy4sOy9MJx8BRNUqXuouo6f3QA=="
+)
+
+
+def test_cds_filtered_only_at_the_apex():
+    m, _, rejected = model(
+        f"@ CDS {CDS_RDATA}\n@ CDNSKEY {CDNSKEY_RDATA}\n"
+        f"_dsboot.child.example CDS {CDS_RDATA}\n_dsboot.child.example CDNSKEY {CDNSKEY_RDATA}\n"
+    )
+    assert set(m) == {key("_dsboot.child.example", "CDS"), key("_dsboot.child.example", "CDNSKEY")}
+    assert {(k[0].to_text(), k[1]) for k in rejected} == {("@", 59), ("@", 60)}
+
+
+def test_cds_at_the_apex_cannot_be_added():
+    with pytest.raises(ValueError, match="CDS/CDNSKEY at the apex"):
+        cli.parse_text("$TTL 300\n" + SOA + f"@ CDS {CDS_RDATA}\n", ORIGIN)
+    m, _ = cli.parse_text("$TTL 300\n" + SOA + f"_dsboot.child.example CDS {CDS_RDATA}\n", ORIGIN)
+    assert key("_dsboot.child.example", "CDS") in m
+
+
+def test_signal_warnings():
+    base, _, _ = model(f"stale CDS {CDS_RDATA}\n")
+    new, _, _ = model(
+        f"stale CDS {CDS_RDATA}\n"  # unchanged: no warning
+        f"_dsboot.a.example CDS {CDS_RDATA}\n"
+        f"_DSBOOT.b.example CDNSKEY {CDNSKEY_RDATA}\n"  # DNS names are case-insensitive
+        f"_dsbot.c.example CDS {CDS_RDATA}\n"
+    )
+    (warning,) = cli.signal_warnings(base, new)
+    assert warning.startswith("_dsbot.c.example CDS is not at a _dsboot name")

@@ -404,3 +404,32 @@ def test_ip6_zone_with_four_nibble_delegation(tmp_path):
         rrs = dig(port, key, zone, "AXFR")
         assert f"0.5.0.0.{zone}. 300 IN NS ns1.example.net." in rrs
         assert f"2.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.0.{zone}. 300 IN PTR r2.example.net." in rrs
+
+
+@pytest.mark.parametrize("signing", list(SIGNING))
+def test_bootstrapping_signals(tmp_path, signing):
+    """RFC 9615 signals (CDS/CDNSKEY below the apex of a signaling zone) can be
+    added and removed; the server accepts them in every signing mode."""
+    zone = "_signal.ns1.example.net"
+    signal = f"_dsboot.child.example.{zone}."
+    cds = "28889 13 2 5859EF0BDC217560D43AA3133526503E4428B6809CCE400FB0B27D74136B41D8"
+    cdnskey = (
+        "257 3 13 ZxTaTTbQHRgbrjhjiThNK5sSqDC2Wu+zPitbVcMjo7mW22++S5bioe1/zicKEy4sOy9MJx8BRNUqXuouo6f3QA=="
+    )
+    with run_named(tmp_path, signing, zone=zone, records="@ IN NS ns1.example.net.\n") as (port, key, tmp):
+        ed = write_editor(
+            tmp,
+            f"printf '_dsboot.child.example 3600 IN CDS {cds}\\n' >> \"$1\"\n"
+            f"printf '_dsboot.child.example 3600 IN CDNSKEY {cdnskey}\\n' >> \"$1\"\n"
+            f"printf '_dsbot.typo.example 3600 IN CDS {cds}\\n' >> \"$1\"\n",
+        )
+        r = run_zedit(port, key, tmp, ed, "y\n", zone=zone)
+        assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+        assert "Warning: _dsbot.typo.example CDS is not at a _dsboot name" in r.stdout
+        assert dig(port, key, signal, "CDS") == {f"{signal} 3600 IN CDS {cds[:-8]} {cds[-8:]}"}
+        assert len(dig(port, key, signal, "CDNSKEY")) == 1
+
+        ed = write_editor(tmp, "sed -i -e '/^_dsboot/d' -e '/^_dsbot/d' \"$1\"\n")
+        r = run_zedit(port, key, tmp, ed, "y\n", zone=zone)
+        assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+        assert not dig(port, key, signal, "CDS") and not dig(port, key, signal, "CDNSKEY")

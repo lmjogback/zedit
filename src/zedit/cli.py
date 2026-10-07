@@ -54,8 +54,12 @@ from zedit import __version__
 SOA = int(dns.rdatatype.SOA)
 CNAME = int(dns.rdatatype.CNAME)
 RRSIG = int(dns.rdatatype.RRSIG)
-# RRSIG, NSEC, DNSKEY, NSEC3, NSEC3PARAM, CDS, CDNSKEY, ZONEMD, BIND private (signing state)
-FILTERED = {46, 47, 48, 50, 51, 59, 60, 63, 65534}
+# RRSIG, NSEC, DNSKEY, NSEC3, NSEC3PARAM, ZONEMD, BIND private (signing state)
+FILTERED = {46, 47, 48, 50, 51, 63, 65534}
+# CDS, CDNSKEY: maintained by the server at the apex. Below it they are ordinary
+# records, e.g. RFC 9615 bootstrapping signals at _dsboot.CHILD._signal.NS-HOST.
+FILTERED_AT_APEX = {59, 60}
+SIGNAL_LABEL = b"_dsboot"
 # Omitted from --show-all by --no-rrsig: the bulky, constantly changing ones
 NOISY = {46, 47, 50}  # RRSIG, NSEC, NSEC3
 SOA_EDITABLE = ("rname", "refresh", "retry", "expire", "minimum")
@@ -97,18 +101,22 @@ def load_bind_key(path):
 # ---------------------------------------------------------------- zone <-> model
 
 
+def is_filtered(name, t):
+    return t in FILTERED or (t in FILTERED_AT_APEX and name == dns.name.empty)
+
+
 def to_model(zone):
     """-> (model, apex SOA, rejected).
 
-    model:    {(relative name, rdtype): Rdataset} without SOA and FILTERED types
-    rejected: {(relative name, rdtype, covers): Rdataset} for FILTERED types and
+    model:    {(relative name, rdtype): Rdataset} without SOA and filtered types
+    rejected: {(relative name, rdtype, covers): Rdataset} for filtered types and
               any SOA outside the apex (keyed with covers: one RRSIG set per type)"""
     m, rejected, soa = {}, {}, None
     for name, rds in zone.iterate_rdatasets():
         t = int(rds.rdtype)
         if t == SOA and name == dns.name.empty:
             soa = rds
-        elif t == SOA or t in FILTERED:
+        elif t == SOA or is_filtered(name, t):
             rejected[(name, t, int(rds.covers))] = rds
         else:
             m[(name, t)] = rds
@@ -381,12 +389,26 @@ def parse_text(text, origin):
     m, soa, rejected = to_model(z)
     if rejected:
         bad = ", ".join(sorted({f"{k[0]} {tname(k[1])}" for k in rejected}))
-        raise ValueError(f"records not allowed (DNSSEC, or SOA outside the apex): {bad}")
+        raise ValueError(f"records not allowed (DNSSEC, CDS/CDNSKEY at the apex, or SOA outside it): {bad}")
     if soa is None:
         raise ValueError("SOA missing - it may be edited but not removed")
     if len(soa) != 1:
         raise ValueError("exactly one SOA is required")
     return m, soa
+
+
+def signal_warnings(base, new):
+    """CDS/CDNSKEY added or changed below the apex but not at a _dsboot name, where
+    an RFC 9615 signal belongs (e.g. a typo such as _dsbot). Only a warning: zedit
+    doesn't check signals against the child zone or its delegation."""
+    return [
+        f"{k[0]} {tname(k[1])} is not at a _dsboot name; RFC 9615 signals are named "
+        "_dsboot.CHILD._signal.NS-HOST"
+        for k in sorted(new, key=sortkey)
+        if k[1] in FILTERED_AT_APEX
+        and k[0].labels[0].lower() != SIGNAL_LABEL
+        and not same(base.get(k), new[k])
+    ]
 
 
 def check_cname(m):
@@ -530,7 +552,13 @@ def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=Non
     notes = notes or {}
     pad = max([len(owner_text(k[0], origin, addresses)) for k in [*model, *(hidden or {})]] + [1])
     if hidden is None:
-        filtered = ["; Filtered out: " + " ".join(tname(t) for t in sorted(FILTERED))]
+        filtered = [
+            "; Filtered out: "
+            + " ".join(tname(t) for t in sorted(FILTERED))
+            + ", and "
+            + " ".join(tname(t) for t in sorted(FILTERED_AT_APEX))
+            + " at the apex"
+        ]
     else:
         filtered = [
             "; Lines starting with ';ro' are read-only (DNSSEC / server-maintained);",
@@ -1042,6 +1070,8 @@ def session(ctx, args):
         print(
             f"\n{len(dels)} delete, {len(adds)} add{', SOA changed' if with_soa else ''} in 1 atomic UPDATE."
         )
+        for w in signal_warnings(base, new):
+            print(f"Warning: {w}")
 
         while True:
             a = ask("Send? [y]es / [N]o / [e]dit / [s]cript: ", {"y", "n", "e", "s"})
