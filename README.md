@@ -182,7 +182,8 @@ isn't greater.
 
 **Semantic diff.** Both sides are parsed and re-rendered canonically before
 diffing, so whitespace, alignment, comments, ordering and equivalent rdata
-spellings (`www` vs `www.example.com.`) don't show up as changes.
+spellings (`www` vs `www.example.com.`) don't show up as changes. On a terminal
+the diff is coloured, unless `NO_COLOR` is set.
 
 **Minimal atomic update.** Only changed RRs are sent, deletes before adds,
 in a single UPDATE. A TTL change replaces the whole RRset.

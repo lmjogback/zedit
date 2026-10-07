@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The diff is no longer coloured when `NO_COLOR` is set (https://no-color.org).
+
 ## 1.1.0 - 2026-10-07
 
 - Fix: if the zone transfer used to verify an update failed, zedit exited

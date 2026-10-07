@@ -714,3 +714,14 @@ def test_resume_command_keeps_the_options(argv):
     if args.no_rrsig:
         expected["show_all"] = False  # implied by --no-rrsig, not repeated
     assert vars(again) == expected
+
+
+@pytest.mark.parametrize(("no_color", "colored"), [(None, True), ("", True), ("1", False)])
+def test_diff_color_honours_no_color(monkeypatch, capsys, no_color, colored):
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+    if no_color is None:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+    else:
+        monkeypatch.setenv("NO_COLOR", no_color)
+    cli.show_diff(["a"], ["b"], "old", "new")
+    assert ("\033[" in capsys.readouterr().out) == colored

@@ -821,7 +821,7 @@ def run_nsupdate(script, keyfile):
 
 
 def show_diff(old_lines, new_lines, fromfile, tofile):
-    color = sys.stdout.isatty()
+    color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")  # https://no-color.org
     for line in difflib.unified_diff(old_lines, new_lines, fromfile, tofile, lineterm=""):
         if color and line.startswith("+") and not line.startswith("+++"):
             line = f"\033[32m{line}\033[0m"
