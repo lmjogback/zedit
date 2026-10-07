@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Fix: in a zone whose SOA RNAME is inside the zone (say
+  `hostmaster.example.com.` in `example.com`), changing the RNAME gave a false
+  conflict, and changing an SOA timer ended in a false "not verified" (exit
+  status 3) although the update was applied. The server's current SOA, read
+  when sending since 1.2.1, had its names absolute while the transferred zone
+  has them relative.
+
 ## 1.2.1 - 2026-10-07
 
 - Fix: when a rebase met a CNAME (or another single-record type) changed to

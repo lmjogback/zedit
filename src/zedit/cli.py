@@ -777,7 +777,11 @@ def serial_max(a, b):
 def live_soa(ctx):
     """The zone's SOA record as the server answers it now, or None if the query
     fails. With inline-signing it is the signed zone's SOA: its serial is normally
-    >= the unsigned one, and its other fields are the same."""
+    >= the unsigned one, and its other fields are the same.
+
+    Names in it are made relative to the zone, as in the transferred zone (an
+    RNAME such as hostmaster.example.com. becomes hostmaster), so that its fields
+    compare equal to the transferred and edited ones."""
     try:
         q = dns.message.make_query(ctx.origin, dns.rdatatype.SOA)
         if ctx.keyring:
@@ -785,7 +789,9 @@ def live_soa(ctx):
         r = dns.query.tcp(q, ctx.server, port=ctx.port, timeout=10)
         for rrset in r.answer:
             if rrset.rdtype == dns.rdatatype.SOA:
-                return rrset[0]
+                return rrset[0].replace(
+                    mname=rrset[0].mname.relativize(ctx.origin), rname=rrset[0].rname.relativize(ctx.origin)
+                )
     except Exception:
         pass
     return None

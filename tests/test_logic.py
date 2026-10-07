@@ -909,3 +909,23 @@ def test_key_file_with_several_keys_is_an_error(tmp_path, capsys):
     with pytest.raises(SystemExit):
         cli.load_bind_key(str(f))
     assert "has 2 key statements (admin, other)" in capsys.readouterr().err
+
+
+def test_live_soa_names_are_relative_like_the_transfer(monkeypatch):
+    """The SOA query answers with absolute names; the transferred zone has them
+    relative. live_soa() makes them relative, so an RNAME inside the zone compares
+    equal (no false conflict or verification failure), and one outside stays."""
+    answer = "example.com. 3600 IN SOA ns1.example.com. hostmaster.example.com. 105 7200 900 1209600 300"
+
+    def tcp(q, server, port, timeout):
+        return cli.dns.message.from_text(
+            f"id {q.id}\nopcode QUERY\nrcode NOERROR\nflags QR AA\n;ANSWER\n{answer}\n"
+        )
+
+    monkeypatch.setattr(cli.dns.query, "tcp", tcp)
+    ctx = cli.SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53, keyring=None, keyname=None)
+    live = cli.live_soa(ctx)
+    _, base, _ = model("", soa="@ 3600 IN SOA ns1 hostmaster 100 7200 900 1209600 300\n")
+    assert (live.mname, live.rname, live.serial) == (base[0].mname, base[0].rname, 105)
+    answer = answer.replace("hostmaster.example.com.", "hostmaster.example.net.")
+    assert cli.live_soa(ctx).rname.to_text() == "hostmaster.example.net."

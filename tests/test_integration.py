@@ -107,15 +107,16 @@ FORWARD = "@ IN NS ns1\nns1 IN A 192.0.2.1\nwww IN A 192.0.2.10\nmail IN A 192.0
 
 
 @contextlib.contextmanager
-def run_named(tmp_path, signing, serial_update_method=None, zone=ZONE, records=FORWARD):
+def run_named(
+    tmp_path, signing, serial_update_method=None, zone=ZONE, records=FORWARD, rname="hostmaster.example.net."
+):
     """Start named with ZONE configured as requested; yield (port, key, tmp_path)."""
     port = free_port()
     key = tmp_path / "admin.key"
     key.write_text(subprocess.check_output([TOOLS["tsig-keygen"], "-a", "hmac-sha256", "admin"], text=True))
     (tmp_path / "keys").mkdir()
     (tmp_path / "db.example").write_text(
-        "$TTL 300\n@ 3600 IN SOA ns1.example.net. hostmaster.example.net. 100 7200 900 1209600 300\n"
-        + records
+        f"$TTL 300\n@ 3600 IN SOA ns1.example.net. {rname} 100 7200 900 1209600 300\n" + records
     )
     method = f"serial-update-method {serial_update_method};" if serial_update_method else ""
     (tmp_path / "named.conf").write_text(f"""
@@ -561,3 +562,23 @@ def test_apex_ns_change(tmp_path, sed, expected):
         r = run_zedit(port, key, tmp, ed, "y\n")
         assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
         assert {rr.split(" ", 1)[1] for rr in dig(port, key, ZONE, "NS")} == expected
+
+
+@pytest.mark.parametrize("signing", list(SIGNING))
+@pytest.mark.parametrize(
+    ("sed", "rname", "refresh"),
+    [
+        ("s/ 7200 900 1209600 300$/ 3600 900 1209600 300/", "hostmaster.example.com.", "3600"),  # a timer
+        ("s/ hostmaster / admin /", "admin.example.com.", "7200"),  # RNAME itself
+    ],
+)
+def test_soa_change_with_rname_inside_the_zone(tmp_path, signing, sed, rname, refresh):
+    """An RNAME inside the zone comes relative from the transfer (hostmaster) but
+    absolute from the SOA query (hostmaster.example.com.). They are the same name:
+    no false conflict, no false verification failure."""
+    with run_named(tmp_path, signing, rname="hostmaster.example.com.") as (port, key, tmp):
+        ed = write_editor(tmp, f"sed -i '/ IN SOA / {sed}' \"$1\"\n")
+        r = run_zedit(port, key, tmp, ed, "y\n")
+        assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+        (rr,) = dig(port, key, ZONE, "SOA")
+        assert rr.split()[5] == rname and rr.split()[7] == refresh
