@@ -11,6 +11,11 @@
   documented, and prints the `--resume` command.
 - `--dry-run` keeps the session and prints a `--resume` command, so the edit
   can be sent later without editing it again.
+- If the editor exits with a non-zero status (such as vim's `:cq`), zedit
+  asks whether to edit again or abort instead of carrying on.
+- An editor that can't be started, an invalid zone name, a damaged `.base`
+  file or an unwritable state directory now give an error message instead of
+  a Python traceback.
 
 ## 1.0.4 - 2026-10-06
 

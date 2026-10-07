@@ -842,8 +842,12 @@ def show_diff(old_lines, new_lines, fromfile, tofile):
 
 
 def run_editor(path):
+    """-> the editor's exit status."""
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-    subprocess.call(shlex.split(editor) + [path])
+    try:
+        return subprocess.call(shlex.split(editor) + [path])
+    except OSError as e:
+        raise ZeditError(f"cannot run editor {editor!r}: {e}") from e
 
 
 def ask(prompt, choices):
@@ -859,7 +863,13 @@ def ask(prompt, choices):
 def edit_until_valid(path, origin, base_soa):
     """-> (model, soa), or None if the user aborts."""
     while True:
-        run_editor(path)
+        status = run_editor(path)
+        if status != 0:
+            # e.g. vim's :cq, the usual way to abort an edit
+            print(f"\nEditor exited with status {status}.")
+            if ask("[e]dit again / [a]bort? ", {"e", "a"}) != "e":
+                return None
+            continue
         try:
             return parse_file(path, origin, base_soa)
         except (dns.exception.DNSException, ValueError) as e:
@@ -945,8 +955,11 @@ def session(ctx, args):
         ctx.path, ctx.basepath = args.resume, args.resume + ".base"
         if not os.path.exists(ctx.basepath):
             raise ZeditError(f"{ctx.basepath} missing - cannot three-way merge without a base")
-        with open(ctx.basepath) as f:
-            base, base_soa = parse_text(f.read(), ctx.origin)
+        try:
+            with open(ctx.basepath) as f:
+                base, base_soa = parse_text(f.read(), ctx.origin)
+        except (dns.exception.DNSException, ValueError) as e:
+            raise ZeditError(f"{ctx.basepath} is invalid: {e}") from e
         try:
             mine, mine_soa = parse_file(ctx.path, ctx.origin, base_soa)
         except (dns.exception.DNSException, ValueError) as e:
@@ -1079,7 +1092,10 @@ def main():
     ap.add_argument("-r", "--resume", metavar="FILE", help="resume a saved edit (requires FILE.base)")
     args = ap.parse_args()
 
-    origin = dns.name.from_text(args.zone)
+    try:
+        origin = dns.name.from_text(args.zone)
+    except dns.exception.DNSException as e:
+        die(f"invalid zone name {args.zone!r}: {e}")
     host = args.server or primary_from_mname(origin)
     address = resolve(host, args.port)
     keyfile = args.keyfile or find_keyfile(origin)
@@ -1109,7 +1125,7 @@ def main():
     except KeyboardInterrupt:
         print()
         rc = 130
-    except ZeditError as e:
+    except (ZeditError, OSError) as e:  # OSError: e.g. state directory not writable, disk full
         print(f"zedit: {e}", file=sys.stderr)
         rc = 1
     if rc:

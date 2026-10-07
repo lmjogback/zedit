@@ -664,3 +664,30 @@ def test_dnspython_reader_hook():
     zone, outside = cli.read_zone(text, ORIGIN)
     assert outside == ["host.elsewhere.org.", "other.example.net."]
     assert {n.to_text() for n in zone.nodes} == {"@", "www", "mail"}
+
+
+def editor_session(monkeypatch, tmp_path, editor, answers):
+    """Run cli.edit_until_valid() on a valid zone file with the given $EDITOR and prompt answers."""
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", editor)
+    replies = iter(answers)
+    monkeypatch.setattr(cli, "ask", lambda prompt, choices: next(replies))
+    _, base_soa, _ = model("")
+    f = tmp_path / "z.zone"
+    f.write_text("$TTL 300\n" + SOA + "www A 192.0.2.10\n")
+    return cli.edit_until_valid(str(f), ORIGIN, base_soa)
+
+
+def test_missing_editor_is_an_error(monkeypatch, tmp_path):
+    with pytest.raises(cli.ZeditError, match="cannot run editor"):
+        editor_session(monkeypatch, tmp_path, str(tmp_path / "no-such-editor"), [])
+
+
+def test_failing_editor_aborts_or_edits_again(monkeypatch, tmp_path):
+    assert editor_session(monkeypatch, tmp_path, "false", ["a"]) is None
+    # "e" runs the editor again; once it succeeds, the file is parsed
+    script = tmp_path / "ed.sh"
+    script.write_text(f"#!/bin/sh\n[ -e {tmp_path}/ran ] && exit 0\ntouch {tmp_path}/ran\nexit 1\n")
+    script.chmod(0o755)
+    m, _ = editor_session(monkeypatch, tmp_path, str(script), ["e"])
+    assert addrs(m, "www") == ["192.0.2.10"]
