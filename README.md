@@ -195,6 +195,12 @@ lock: in a signed zone the serial changes on every re-signing, and with
 inline-signing the transferred (signed) serial never matches the unsigned zone
 that receives the UPDATE.
 
+One narrow case gets through: RFC 2136 prerequisites ignore TTLs. If someone
+else changes only the TTL of an RRset while you change its records (keeping its
+TTL), the prerequisite still holds and the server gives the whole RRset your
+TTL, undoing theirs. Verification doesn't notice, since the result matches your
+edit.
+
 **Verification.** After a successful `nsupdate`, zedit transfers the zone again
 (with retries, since inline-signing updates the signed zone asynchronously) and
 checks that every changed RRset matches your edit. BIND silently drops some
