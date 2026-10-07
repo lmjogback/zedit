@@ -490,3 +490,45 @@ def test_bootstrapping_signals(tmp_path, signing):
         r = run_zedit(port, key, tmp, ed, "y\n", zone=zone)
         assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
         assert not dig(port, key, signal, "CDS") and not dig(port, key, signal, "CDNSKEY")
+
+
+def concurrent_soa(key, port, fields):
+    """Shell snippet: the server's SOA changed by someone else while editing."""
+    return nsupdate(
+        key, port, f"update add example.com. 3600 IN SOA ns1.example.net. hostmaster.example.net. {fields}"
+    )
+
+
+def soa_fields(port, key):
+    (rr,) = dig(port, key, ZONE, "SOA")
+    return rr.split()[7:]  # REFRESH RETRY EXPIRE MINIMUM
+
+
+def test_soa_change_keeps_concurrent_change_to_another_field(server):
+    """Mine: MINIMUM 300 -> 60. Meanwhile on the server: REFRESH 7200 -> 3600.
+    Both survive; the SOA isn't sent as edited from the old transfer."""
+    port, key, tmp = server
+    ed = write_editor(
+        tmp,
+        "sed -i 's/1209600 300/1209600 60/' \"$1\"\n" + concurrent_soa(key, port, "150 3600 900 1209600 300"),
+    )
+    r = run_zedit(port, key, tmp, ed, "y\n")
+    assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+    assert soa_fields(port, key) == ["3600", "900", "1209600", "60"]
+
+
+def test_soa_conflict_on_the_same_field_rebases(server):
+    """Mine: MINIMUM 300 -> 60. Meanwhile on the server: MINIMUM 300 -> 120.
+    Nothing is sent; the rebase marks the conflict, keeps mine and opens the editor."""
+    port, key, tmp = server
+    ed = write_editor(
+        tmp,
+        # Only the first time: the editor opens again after the rebase
+        f'[ -e "{tmp}/edited" ] && exit 0\ntouch "{tmp}/edited"\n'
+        "sed -i 's/1209600 300/1209600 60/' \"$1\"\n" + concurrent_soa(key, port, "150 7200 900 1209600 120"),
+    )
+    r = run_zedit(port, key, tmp, ed, "y\nr\ny\n")
+    assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+    assert "SOA MINIMUM changed both by you and on the server" in r.stderr
+    assert "1 conflict(s)" in r.stdout
+    assert soa_fields(port, key) == ["7200", "900", "1209600", "60"]

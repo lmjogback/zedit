@@ -190,10 +190,16 @@ each value as transferred:
 ;   MINIMUM = 60                       (1 minute) TTL of negative answers, RFC 2308
 ;   TTL     = 60                       (1 minute) TTL of the SOA record itself (locked)
 ```
- When the SOA changes, the update carries
-`max(transferred, live) + 1` in RFC 1982 arithmetic, read from the server at the
-moment of sending, since RFC 2136 §3.4.2.2 silently ignores an SOA whose serial
-isn't greater.
+
+When you change the SOA, zedit reads the server's current SOA at the moment of
+sending and merges the editable fields three ways: a field changed only on the
+server since the transfer keeps the server's value, so a concurrent change to
+another field isn't overwritten. If you and the server changed the same field to
+different values, nothing is sent and you can rebase, which marks the conflict.
+The serial sent is `max(transferred, live) + 1` in RFC 1982 arithmetic, since RFC
+2136 §3.4.2.2 silently ignores an SOA whose serial isn't greater. The SOA can't be
+locked with a prerequisite (see below), so a change made in the milliseconds
+between reading it and sending is still overwritten.
 
 **Semantic diff.** Both sides are parsed and re-rendered canonically before
 diffing, so whitespace, alignment, comments, ordering and equivalent rdata

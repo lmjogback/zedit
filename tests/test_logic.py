@@ -60,9 +60,11 @@ def test_ttl_change_replaces_rrset():
 def test_soa_update_bumps_serial_and_wraps():
     _, old, _ = model("", soa="@ 3600 IN SOA ns1 hm 4294967295 7200 900 1209600 300\n")
     _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 4294967295 7200 900 1209600 60\n")
-    (line,) = cli.soa_update(old, new, ORIGIN)
-    assert " 0 7200 900 1209600 60" in line
-    assert cli.soa_update(old, old, ORIGIN) == []
+    soa, conflicts = cli.soa_to_send(old, new, old[0])
+    (line,) = cli.soa_update(soa, new.ttl, ORIGIN)
+    assert " 0 7200 900 1209600 60" in line and conflicts == []
+    assert cli.soa_to_send(old, old, None) == (None, [])
+    assert cli.soa_update(None, 3600, ORIGIN) == []
 
 
 def test_locked_soa_fields(tmp_path):
@@ -148,8 +150,35 @@ def test_serial_max_rfc1982():
 def test_soa_update_uses_live_serial():
     _, old, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 300\n")
     _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 60\n")
-    (line,) = cli.soa_update(old, new, ORIGIN, current_serial=117)
-    assert " 118 7200 900 1209600 60" in line
+    soa, _ = cli.soa_to_send(old, new, old[0].replace(serial=117))
+    assert soa.serial == 118
+
+
+def soa_rd(fields):
+    _, rds, _ = model("", soa=f"@ 3600 IN SOA ns1 hm {fields}\n")
+    return rds
+
+
+def test_soa_keeps_concurrent_changes_to_other_fields():
+    """Mine: MINIMUM 300 -> 60; on the server meanwhile: REFRESH 7200 -> 3600.
+    Both survive, instead of mine overwriting the server's REFRESH."""
+    base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
+    live = soa_rd("105 3600 900 1209600 300")[0]
+    soa, conflicts = cli.soa_to_send(base, mine, live)
+    assert (soa.serial, soa.refresh, soa.minimum, conflicts) == (106, 3600, 60, [])
+
+
+def test_soa_conflict_on_the_same_field():
+    base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
+    live = soa_rd("105 7200 900 1209600 120")[0]
+    _, conflicts = cli.soa_to_send(base, mine, live)
+    assert conflicts == ["MINIMUM"]
+
+
+def test_soa_not_sent_blind():
+    base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
+    with pytest.raises(cli.ZeditError, match="current SOA"):
+        cli.soa_to_send(base, mine, None)
 
 
 SIGNED = (
@@ -634,9 +663,9 @@ def verify_with(monkeypatch, results):
 
     monkeypatch.setattr(cli, "fetch", fetch)
     monkeypatch.setattr(cli.time, "sleep", lambda s: None)
-    base, base_soa, _ = model("www A 192.0.2.10\n")
-    new, new_soa, _ = model("www A 192.0.2.11\n")
-    return cli.verify(None, base, new, base_soa, new_soa, attempts=len(results))
+    base, _, _ = model("www A 192.0.2.10\n")
+    new, _, _ = model("www A 192.0.2.11\n")
+    return cli.verify(None, base, new, attempts=len(results))
 
 
 def test_verify_reports_failed_transfer(monkeypatch):

@@ -6,6 +6,11 @@
   different values by you and on the server, it kept one of them at random and
   reported no conflict. It is now a conflict: yours is kept, marked
   `; CONFLICT`, and the editor opens.
+- Fix: changing the SOA overwrote a concurrent change to another SOA field
+  (say REFRESH changed on the server while you changed MINIMUM), and zedit
+  still reported "Updated and verified." The editable fields are now merged
+  with the server's current SOA when sending; if both sides changed the same
+  field, nothing is sent and you can rebase.
 
 ## 1.2.0 - 2026-10-07
 

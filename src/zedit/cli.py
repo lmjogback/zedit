@@ -754,9 +754,10 @@ def serial_max(a, b):
     return b if 0 < (b - a) % 2**32 < 2**31 else a
 
 
-def live_serial(ctx):
-    """Current SOA serial as answered by the server, or None if the query fails.
-    With inline-signing this is the signed serial, normally >= the unsigned one."""
+def live_soa(ctx):
+    """The zone's SOA record as the server answers it now, or None if the query
+    fails. With inline-signing it is the signed zone's SOA: its serial is normally
+    >= the unsigned one, and its other fields are the same."""
     try:
         q = dns.message.make_query(ctx.origin, dns.rdatatype.SOA)
         if ctx.keyring:
@@ -764,7 +765,7 @@ def live_serial(ctx):
         r = dns.query.tcp(q, ctx.server, port=ctx.port, timeout=10)
         for rrset in r.answer:
             if rrset.rdtype == dns.rdatatype.SOA:
-                return rrset[0].serial
+                return rrset[0]
     except Exception:
         pass
     return None
@@ -774,17 +775,37 @@ def soa_changed(old_rds, new_rds):
     return old_rds.ttl != new_rds.ttl or old_rds[0] != new_rds[0]
 
 
-def soa_update(old_rds, new_rds, origin, current_serial=None):
-    """RFC 2136 §3.4.2.2: an SOA add replaces the existing SOA only if its serial
-    is greater (RFC 1982), otherwise it is silently ignored. The transferred
-    serial may be stale (re-signing) or belong to the signed zone (inline-signing),
-    so send max(base, live) + 1; BIND then does not bump it a second time.
-    No prerequisite is put on the SOA itself, for the same reason."""
-    if not soa_changed(old_rds, new_rds):
+def soa_to_send(base_rds, new_rds, live):
+    """-> (the SOA record to send, or None if the edit doesn't change the SOA;
+    the editable fields that conflict).
+
+    The SOA can't be locked with a prerequisite: in a signed zone its serial
+    changes on every re-signing, and with inline-signing the transferred serial
+    belongs to the signed zone, not the one that receives the UPDATE. So the
+    editable fields are merged three ways when the UPDATE is built, from the
+    SOA as transferred (base), as edited (mine) and as the server has it now
+    (live): a field changed only on the server keeps the server's value.
+    RFC 2136 §3.4.2.2 silently ignores an SOA whose serial isn't greater (RFC
+    1982), so the serial is max(base, live) + 1; BIND then doesn't bump it a
+    second time."""
+    if not soa_changed(base_rds, new_rds):
+        return None, []
+    if live is None:
+        raise ZeditError("cannot read the zone's current SOA from the server, so the SOA change was not sent")
+    fields, conflicts = {}, []
+    for f in SOA_EDITABLE:
+        fields[f], c = merge_scalar(getattr(base_rds[0], f), getattr(new_rds[0], f), getattr(live, f))
+        if c:
+            conflicts.append(f.upper())
+    serial = (serial_max(base_rds[0].serial, live.serial) + 1) % 2**32
+    return new_rds[0].replace(serial=serial, **fields), conflicts
+
+
+def soa_update(soa, ttl, origin):
+    """The nsupdate line that sets the SOA, or none."""
+    if soa is None:
         return []
-    serial = (serial_max(old_rds[0].serial, current_serial) + 1) % 2**32
-    soa = new_rds[0].replace(serial=serial)
-    return [f"update add {origin} {new_rds.ttl} IN SOA {soa.to_text(origin=origin, relativize=False)}"]
+    return [f"update add {origin} {ttl} IN SOA {soa.to_text(origin=origin, relativize=False)}"]
 
 
 def build_script(server, port, origin, prereqs, dels, adds):
@@ -794,17 +815,28 @@ def build_script(server, port, origin, prereqs, dels, adds):
 
 
 def make_script(ctx, base_soa, new_soa, prereqs, dels, adds):
-    # The SOA serial is taken from the live zone at the moment the script is built.
-    serial = live_serial(ctx) if soa_changed(base_soa, new_soa) else None
-    soa_adds = soa_update(base_soa, new_soa, ctx.origin, serial)
-    return build_script(ctx.server, ctx.port, ctx.origin, prereqs, dels, adds + soa_adds)
+    """-> (nsupdate script, SOA record sent or None, conflicting SOA fields).
+    The SOA is merged with the live zone at the moment this is called."""
+    live = live_soa(ctx) if soa_changed(base_soa, new_soa) else None
+    soa, conflicts = soa_to_send(base_soa, new_soa, live)
+    script = build_script(
+        ctx.server, ctx.port, ctx.origin, prereqs, dels, adds + soa_update(soa, new_soa.ttl, ctx.origin)
+    )
+    return script, soa, conflicts
 
 
-def verify(ctx, base, new, base_soa, new_soa, attempts=10):
+def soa_conflict_message(conflicts):
+    return (
+        f"SOA {', '.join(conflicts)} changed both by you and on the server since the transfer; nothing sent."
+    )
+
+
+def verify(ctx, base, new, soa=None, attempts=10):
     """Re-transfer the zone and check that every RRset we changed now matches
-    the edit. BIND silently drops some updates (CNAME rule, SOA with a non-greater
-    serial, TTLs above a dnssec-policy max-zone-ttl), and with inline-signing the
-    signed zone is updated asynchronously, hence the retries.
+    the edit, and the SOA's editable fields the SOA record sent (soa; None if the
+    SOA wasn't sent). BIND silently drops some updates (CNAME rule, SOA with a
+    non-greater serial, TTLs above a dnssec-policy max-zone-ttl), and with
+    inline-signing the signed zone is updated asynchronously, hence the retries.
     -> list of RRsets that don't match (empty on success)."""
     changed = [k for k in set(base) | set(new) if not same(base.get(k), new.get(k))]
     bad = []
@@ -820,11 +852,9 @@ def verify(ctx, base, new, base_soa, new_soa, attempts=10):
                 for k in sorted(changed, key=sortkey)
                 if not same(after.get(k), new.get(k))
             ]
-            if soa_changed(base_soa, new_soa):
+            if soa is not None:
                 bad += [
-                    f"SOA {f.upper()}"
-                    for f in SOA_EDITABLE
-                    if getattr(after_soa[0], f) != getattr(new_soa[0], f)
+                    f"SOA {f.upper()}" for f in SOA_EDITABLE if getattr(after_soa[0], f) != getattr(soa, f)
                 ]
             if not bad:
                 return []
@@ -1087,23 +1117,33 @@ def session(ctx, args):
             a = ask("Send? [y]es / [N]o / [e]dit / [s]cript: ", {"y", "n", "e", "s"})
             if a != "s":
                 break
-            print(make_script(ctx, *plan))
+            script, _, conflicts = make_script(ctx, *plan)
+            print(script)
+            if conflicts:
+                print(f"Warning: {soa_conflict_message(conflicts)} Sending would offer a rebase.")
         if a == "e":
             continue
         if a != "y":
             print("Nothing sent.")
             return 2
         if args.dry_run:
-            print(make_script(ctx, *plan))
+            script, _, conflicts = make_script(ctx, *plan)
+            print(script)
+            if conflicts:
+                print(f"Warning: {soa_conflict_message(conflicts)} Sending would offer a rebase.")
             print("Nothing sent (--dry-run).")
             hint(ctx, args, dry_run=True)
             return 0
 
-        ok, out, can_rebase = run_nsupdate(make_script(ctx, *plan), ctx.keyfile)
+        script, sent_soa, conflicts = make_script(ctx, *plan)
+        if conflicts:
+            ok, out, can_rebase = False, soa_conflict_message(conflicts), True
+        else:
+            ok, out, can_rebase = run_nsupdate(script, ctx.keyfile)
         if ok:
             if out:
                 print(out)
-            missing = verify(ctx, base, new, base_soa, new_soa)
+            missing = verify(ctx, base, new, sent_soa)
             if missing:
                 print(
                     "Update accepted, but could not be verified:\n  "
