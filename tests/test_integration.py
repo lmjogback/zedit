@@ -4,6 +4,7 @@ doesn't start; with ZEDIT_REQUIRE_INTEGRATION set (as in CI), that fails instead
 import contextlib
 import datetime
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -63,11 +64,33 @@ class DigError(Exception):
     pass
 
 
+def dig_tsig(key):
+    """The key file as dig's -y ALG:NAME:SECRET. dig -k can't read key files
+    outside $HOME on Ubuntu 26.04, whose AppArmor profile for dig allows only
+    those, and the tests keep their keys in tmp_path."""
+    text = key.read_text()
+    name = re.search(r'key\s+"([^"]+)"', text).group(1)
+    alg = re.search(r"algorithm\s+([\w.-]+);", text).group(1)
+    secret = re.search(r'secret\s+"([^"]+)";', text).group(1)
+    return f"{alg}:{name}:{secret}"
+
+
 def dig(port, key, *args):
     """Answer records, over TCP like zedit itself. Anything dig reports instead
     (';' lines, e.g. a failed transfer or a malformed response) raises DigError."""
     out = subprocess.check_output(
-        [TOOLS["dig"], "+tcp", "+noall", "+answer", "-p", str(port), "@127.0.0.1", "-k", str(key), *args],
+        [
+            TOOLS["dig"],
+            "+tcp",
+            "+noall",
+            "+answer",
+            "-p",
+            str(port),
+            "@127.0.0.1",
+            "-y",
+            dig_tsig(key),
+            *args,
+        ],
         text=True,
     )
     lines = out.splitlines()
