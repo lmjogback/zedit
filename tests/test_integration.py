@@ -35,16 +35,34 @@ SIGNING = {
 
 
 def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """A port free for both TCP and UDP on 127.0.0.1, since named listens on both."""
+    for _ in range(100):
+        with socket.socket() as tcp, socket.socket(type=socket.SOCK_DGRAM) as udp:
+            tcp.bind(("127.0.0.1", 0))
+            port = tcp.getsockname()[1]
+            try:
+                udp.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError("no port free for both TCP and UDP")
+
+
+class DigError(Exception):
+    pass
 
 
 def dig(port, key, *args):
+    """Answer records, over TCP like zedit itself. Anything dig reports instead
+    (';' lines, e.g. a failed transfer or a malformed response) raises DigError."""
     out = subprocess.check_output(
-        [TOOLS["dig"], "+noall", "+answer", "-p", str(port), "@127.0.0.1", "-k", str(key), *args], text=True
+        [TOOLS["dig"], "+tcp", "+noall", "+answer", "-p", str(port), "@127.0.0.1", "-k", str(key), *args],
+        text=True,
     )
-    return {" ".join(line.split()) for line in out.splitlines()}
+    lines = out.splitlines()
+    if any(line.startswith(";") for line in lines):
+        raise DigError(out)
+    return {" ".join(line.split()) for line in lines}
 
 
 def axfr(port, key):
@@ -88,7 +106,7 @@ zone "{zone}" {{ type primary; file "{tmp_path}/db.example"; {SIGNING[signing]} 
                 loaded = any(" SOA " in rr for rr in rrs)  # dig exits 0 on SERVFAIL too
                 if loaded and (signing == "unsigned" or any(" DNSKEY " in rr for rr in rrs)):
                     break
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, DigError):
                 pass
             time.sleep(0.1)
         else:
