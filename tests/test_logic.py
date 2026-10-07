@@ -1,6 +1,7 @@
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 
 import dns.exception
@@ -725,3 +726,33 @@ def test_diff_color_honours_no_color(monkeypatch, capsys, no_color, colored):
         monkeypatch.setenv("NO_COLOR", no_color)
     cli.show_diff(["a"], ["b"], "old", "new")
     assert ("\033[" in capsys.readouterr().out) == colored
+
+
+@pytest.fixture
+def listener():
+    """A TCP listener on 127.0.0.1 only -> its port."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        yield s.getsockname()[1]
+
+
+def test_resolve_falls_back_to_a_reachable_address(monkeypatch, listener):
+    # IPv6 first, as for a server with an AAAA record, but nothing answers there
+    def getaddrinfo(host, port, *args, **kwargs):
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+        ]
+
+    monkeypatch.setattr(cli.socket, "getaddrinfo", getaddrinfo)
+    assert cli.resolve("ns1.example.net", listener) == "127.0.0.1"
+
+
+def test_resolve_fails_when_nothing_answers(capsys):
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        closed = s.getsockname()[1]  # bound but not listening: refused
+        with pytest.raises(SystemExit):
+            cli.resolve("127.0.0.1", closed)
+    assert "cannot connect to 127.0.0.1 port" in capsys.readouterr().err

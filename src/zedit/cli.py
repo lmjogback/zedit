@@ -23,6 +23,8 @@ Requires: python >= 3.10, dnspython >= 2.4, nsupdate (bind9-dnsutils).
 """
 
 import argparse
+import asyncio
+import contextlib
 import difflib
 import ipaddress
 import os
@@ -870,10 +872,27 @@ def edit_until_valid(path, origin, base_soa):
 
 
 def resolve(host, port):
+    """The address of host that first accepts a TCP connection on port, using
+    Happy Eyeballs (RFC 8305): a server with an AAAA record is still reached
+    quickly over IPv4 when IPv6 doesn't work. AXFR and the UPDATE (nsupdate -v)
+    use TCP anyway."""
+
+    async def connect():
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port, happy_eyeballs_delay=0.25), timeout=10
+        )
+        address = writer.get_extra_info("peername")[0]
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+        return address
+
     try:
-        return socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0][4][0]
+        return asyncio.run(connect())
     except socket.gaierror as e:
         die(f"cannot resolve {host}: {e}")
+    except (OSError, asyncio.TimeoutError) as e:
+        die(f"cannot connect to {host} port {port}: {str(e) or 'timed out'}")
 
 
 def primary_from_mname(origin):

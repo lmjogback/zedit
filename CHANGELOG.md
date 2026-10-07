@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix: a server with an AAAA record couldn't be reached when IPv6 doesn't
+  work, since zedit used only the first address. It now connects with Happy
+  Eyeballs (RFC 8305) and uses the first address that answers.
 - The diff is no longer coloured when `NO_COLOR` is set (https://no-color.org).
 
 ## 1.1.0 - 2026-10-07

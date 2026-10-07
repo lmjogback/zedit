@@ -62,6 +62,9 @@ zedit [-s SERVER] [-p PORT] [-k KEYFILE] [-a] [--no-rrsig] [-A] [-n] [-r FILE] z
 | `-r`, `--resume FILE` | Resume a saved session (rebases onto the current zone) |
 
 When the server or key comes from a default, zedit prints which ones it uses.
+If the server name has several addresses, zedit connects with Happy Eyeballs
+(RFC 8305) and uses the first address that accepts a TCP connection, so a
+broken IPv6 path quickly falls back to IPv4.
 
 ### Default key
 
