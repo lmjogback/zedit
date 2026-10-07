@@ -21,6 +21,8 @@
   created exclusively, numbered `-2`, `-3` … if the name is taken.
 - A key file with more than one key statement is now an error at start.
   `nsupdate` refuses such a file, so the update used to fail only after editing.
+- zedit warns if the directory with the saved sessions is accessible by group
+  or others. It doesn't change the permissions.
 
 ## 1.2.0 - 2026-10-07
 

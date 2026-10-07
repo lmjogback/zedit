@@ -882,6 +882,15 @@ def test_sessions_in_the_same_second_get_their_own_files(tmp_path, monkeypatch):
     assert os.path.exists(first) and os.path.exists(second)  # created, so reserved
 
 
+def test_state_dir_warns_if_others_can_access_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    d = cli.state_dir()
+    assert oct(os.stat(d).st_mode & 0o777) == "0o700" and capsys.readouterr().err == ""
+    os.chmod(d, 0o755)  # zedit doesn't change it back, but says so
+    assert cli.state_dir() == d and oct(os.stat(d).st_mode & 0o777) == "0o755"
+    assert "is accessible by group/others" in capsys.readouterr().err
+
+
 KEY = 'key "{name}" {{\n\talgorithm hmac-sha256;\n\tsecret "c2VjcmV0c2VjcmV0c2VjcmV0";\n}};\n'
 
 

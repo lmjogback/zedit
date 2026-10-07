@@ -1031,7 +1031,13 @@ def check_keyfile(path):
 
 def state_dir():
     d = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "zedit")
-    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.makedirs(d, mode=0o700, exist_ok=True)  # the mode applies only if it is created
+    if os.stat(d).st_mode & 0o077:
+        print(
+            f"zedit: warning: {d} is accessible by group/others, and saved sessions hold zone data"
+            " (chmod 700)",
+            file=sys.stderr,
+        )
     return d
 
 

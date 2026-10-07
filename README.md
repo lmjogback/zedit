@@ -254,7 +254,8 @@ same second as another one for the zone gets `ZONE-TIMESTAMP-2.zone`, and so on.
 Both are removed after a successful, verified update. On abort or failure,
 including answering no to `Send?`, zedit prints a `--resume` command. So does
 `--dry-run`: resume without `--dry-run` to send the same edit, rebased onto the
-zone as it is then.
+zone as it is then. The directory is created accessible only to you; zedit warns,
+but changes nothing, if its permissions have since been opened to others.
 
 **Exit status.** 0 success (or nothing to do), 1 error or aborted edit,
 2 update rejected or aborted, 3 update accepted but not verified, 130 interrupted.
