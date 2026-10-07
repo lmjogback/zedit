@@ -11,6 +11,11 @@
   still reported "Updated and verified." The editable fields are now merged
   with the server's current SOA when sending; if both sides changed the same
   field, nothing is sent and you can rebase.
+- Fix: replacing the zone's only apex NS record left the old one in place
+  (the server ignores deleting the last apex NS, RFC 2136 §3.4.2.4); zedit
+  reported it as not verified, but the zone had changed. At the apex NS, new
+  records are now added before old ones are deleted. Removing every apex NS
+  record is an error in the editor.
 
 ## 1.2.0 - 2026-10-07
 

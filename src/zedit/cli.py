@@ -53,6 +53,7 @@ from zedit import __version__
 
 SOA = int(dns.rdatatype.SOA)
 CNAME = int(dns.rdatatype.CNAME)
+NS = int(dns.rdatatype.NS)
 RRSIG = int(dns.rdatatype.RRSIG)
 # RRSIG, NSEC, DNSKEY, NSEC3, NSEC3PARAM, ZONEMD, BIND private (signing state)
 FILTERED = {46, 47, 48, 50, 51, 63, 65534}
@@ -434,6 +435,9 @@ def parse_file(path, origin, base_soa):
     if locked:
         raise ValueError(f"locked SOA fields changed: {', '.join(locked)}")
     check_cname(m)
+    if (dns.name.empty, NS) not in m:
+        # The server would ignore deleting the last one (RFC 2136 §3.4.2.4)
+        raise ValueError("the zone apex needs at least one NS record")
     return m, soa
 
 
@@ -705,7 +709,11 @@ def rebase(ctx, base, base_soa, mine, mine_soa):
 
 
 def compute_update(old, new, origin):
-    dels, adds = [], []
+    """-> (deletes, adds, final deletes). Deletes go before adds (handles e.g.
+    A -> CNAME), except at the apex NS RRset: RFC 2136 §3.4.2.4 has the server
+    ignore deleting the apex NS RRset or its last record, so there the new
+    records are added first and the old ones deleted after ("final deletes")."""
+    dels, adds, final = [], [], []
 
     def rd(r):
         return r.to_text(origin=origin, relativize=False)
@@ -714,7 +722,11 @@ def compute_update(old, new, origin):
         o, n = old.get(key), new.get(key)
         fq = key[0].derelativize(origin).to_text()
         tt = tname(key[1])
-        if o is None:
+        if key == (dns.name.empty, NS) and o is not None and n is not None:
+            changed = list(n) if o.ttl != n.ttl else [r for r in n if r not in o]
+            adds += [f"update add {fq} {n.ttl} IN {tt} {rd(r)}" for r in changed]
+            final += [f"update delete {fq} IN {tt} {rd(r)}" for r in o if r not in n]
+        elif o is None:
             adds += [f"update add {fq} {n.ttl} IN {tt} {rd(r)}" for r in n]
         elif n is None:
             dels.append(f"update delete {fq} IN {tt}")
@@ -725,7 +737,7 @@ def compute_update(old, new, origin):
         else:
             dels += [f"update delete {fq} IN {tt} {rd(r)}" for r in o if r not in n]
             adds += [f"update add {fq} {n.ttl} IN {tt} {rd(r)}" for r in n if r not in o]
-    return dels, adds
+    return dels, adds, final
 
 
 def compute_prereqs(old, new, origin):
@@ -808,19 +820,25 @@ def soa_update(soa, ttl, origin):
     return [f"update add {origin} {ttl} IN SOA {soa.to_text(origin=origin, relativize=False)}"]
 
 
-def build_script(server, port, origin, prereqs, dels, adds):
+def build_script(server, port, origin, prereqs, dels, adds, final=()):
     lines = [f"server {server} {port}", f"zone {origin}"]
-    # All deletes before adds: handles e.g. A -> CNAME in the same transaction.
-    return "\n".join(lines + prereqs + dels + adds + ["send", ""])
+    # Deletes before adds, final deletes last; see compute_update()
+    return "\n".join(lines + prereqs + dels + adds + list(final) + ["send", ""])
 
 
-def make_script(ctx, base_soa, new_soa, prereqs, dels, adds):
+def make_script(ctx, base_soa, new_soa, prereqs, dels, adds, final):
     """-> (nsupdate script, SOA record sent or None, conflicting SOA fields).
     The SOA is merged with the live zone at the moment this is called."""
     live = live_soa(ctx) if soa_changed(base_soa, new_soa) else None
     soa, conflicts = soa_to_send(base_soa, new_soa, live)
     script = build_script(
-        ctx.server, ctx.port, ctx.origin, prereqs, dels, adds + soa_update(soa, new_soa.ttl, ctx.origin)
+        ctx.server,
+        ctx.port,
+        ctx.origin,
+        prereqs,
+        dels,
+        adds + soa_update(soa, new_soa.ttl, ctx.origin),
+        final,
     )
     return script, soa, conflicts
 
@@ -1101,14 +1119,15 @@ def session(ctx, args):
             cleanup(ctx)
             return 0
 
-        dels, adds = compute_update(base, new, ctx.origin)
+        dels, adds, final = compute_update(base, new, ctx.origin)
         prereqs = compute_prereqs(base, new, ctx.origin)
         with_soa = soa_changed(base_soa, new_soa)
-        plan = (base_soa, new_soa, prereqs, dels, adds)
+        plan = (base_soa, new_soa, prereqs, dels, adds, final)
 
         show_diff(old_lines, new_lines, f"{ctx.origin} (serial {base_soa[0].serial})", "edited")
         print(
-            f"\n{len(dels)} delete, {len(adds)} add{', SOA changed' if with_soa else ''} in 1 atomic UPDATE."
+            f"\n{len(dels) + len(final)} delete, {len(adds)} add{', SOA changed' if with_soa else ''}"
+            " in 1 atomic UPDATE."
         )
         for w in signal_warnings(base, new):
             print(f"Warning: {w}")

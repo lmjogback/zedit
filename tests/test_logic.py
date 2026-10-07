@@ -38,7 +38,7 @@ def test_dnssec_types_filtered():
 def test_compute_update_minimal_and_ordered():
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\nfoo A 192.0.2.9\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nfoo CNAME www\n")
-    dels, adds = cli.compute_update(old, new, ORIGIN)
+    dels, adds, final = cli.compute_update(old, new, ORIGIN)
     assert dels == [
         "update delete foo.example.com. IN A",
         "update delete www.example.com. IN A 192.0.2.2",
@@ -52,9 +52,32 @@ def test_compute_update_minimal_and_ordered():
 def test_ttl_change_replaces_rrset():
     old, _, _ = model("www 300 A 192.0.2.1\n")
     new, _, _ = model("www 60 A 192.0.2.1\n")
-    dels, adds = cli.compute_update(old, new, ORIGIN)
+    dels, adds, final = cli.compute_update(old, new, ORIGIN)
     assert dels == ["update delete www.example.com. IN A"]
     assert adds == ["update add www.example.com. 60 IN A 192.0.2.1"]
+    assert final == []
+
+
+@pytest.mark.parametrize(
+    ("old_ns", "new_ns", "adds", "final"),
+    [
+        ("@ NS ns1\n", "@ NS ns2\n", ["300 IN NS ns2.example.com."], ["IN NS ns1.example.com."]),
+        ("@ 300 NS ns1\n", "@ 600 NS ns1\n", ["600 IN NS ns1.example.com."], []),
+        ("@ NS ns1\n@ NS ns2\n", "@ NS ns1\n", [], ["IN NS ns2.example.com."]),
+    ],
+)
+def test_apex_ns_added_before_deleted(old_ns, new_ns, adds, final):
+    """RFC 2136 §3.4.2.4: deleting the apex NS RRset or its last record is
+    ignored, so at the apex NS zedit adds first and deletes the old records last,
+    one by one, never the whole RRset."""
+    old, _, _ = model(old_ns)
+    new, _, _ = model(new_ns)
+    d, a, f = cli.compute_update(old, new, ORIGIN)
+    assert d == []
+    assert [x.removeprefix("update add example.com. ") for x in a] == adds
+    assert [x.removeprefix("update delete example.com. ") for x in f] == final
+    script = cli.build_script("192.0.2.53", 53, ORIGIN, [], d, a, f)
+    assert all(script.index(x) < script.index(y) for x in a for y in f)
 
 
 def test_soa_update_bumps_serial_and_wraps():
@@ -705,7 +728,7 @@ def editor_session(monkeypatch, tmp_path, editor, answers):
     monkeypatch.setattr(cli, "ask", lambda prompt, choices: next(replies))
     _, base_soa, _ = model("")
     f = tmp_path / "z.zone"
-    f.write_text("$TTL 300\n" + SOA + "www A 192.0.2.10\n")
+    f.write_text("$TTL 300\n" + SOA + "@ NS ns1\nwww A 192.0.2.10\n")
     return cli.edit_until_valid(str(f), ORIGIN, base_soa)
 
 
@@ -837,3 +860,11 @@ def test_merge_singleton_type_is_a_conflict(base, mine, theirs):
     assert [r.to_text() for r in merged[k]] == ["mine"]
     assert conflicts == 1
     assert any(line.startswith("; CONFLICT CNAME:") and "mine kept" in line for line in notes[k])
+
+
+def test_apex_ns_cannot_all_be_removed(tmp_path):
+    _, base_soa, _ = model("")
+    f = tmp_path / "z.zone"
+    f.write_text("$TTL 300\n" + SOA + "www A 192.0.2.10\n")
+    with pytest.raises(ValueError, match="apex needs at least one NS"):
+        cli.parse_file(str(f), ORIGIN, base_soa)

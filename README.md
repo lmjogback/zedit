@@ -207,7 +207,10 @@ spellings (`www` vs `www.example.com.`) don't show up as changes. On a terminal
 the diff is coloured, unless `NO_COLOR` is set.
 
 **Minimal atomic update.** Only changed RRs are sent, deletes before adds,
-in a single UPDATE. A TTL change replaces the whole RRset.
+in a single UPDATE. A TTL change replaces the whole RRset. The apex NS RRset is
+the exception: a server ignores deleting it or its last record (RFC 2136
+§3.4.2.4), so there the new records are added first and the old ones deleted
+after. The apex must keep at least one NS record.
 
 **Optimistic lock per RRset.** Every RRset the update changes or deletes gets a
 value-dependent `prereq yxrrset` with its content as transferred; every RRset it

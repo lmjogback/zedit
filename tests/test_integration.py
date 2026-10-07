@@ -532,3 +532,25 @@ def test_soa_conflict_on_the_same_field_rebases(server):
     assert "SOA MINIMUM changed both by you and on the server" in r.stderr
     assert "1 conflict(s)" in r.stdout
     assert soa_fields(port, key) == ["7200", "900", "1209600", "60"]
+
+
+@pytest.mark.parametrize(
+    ("sed", "expected"),
+    [
+        # Replace the only apex NS: deleting the last one first would be ignored
+        (r"s/(IN +NS +)ns1\./\1ns2./", {"300 IN NS ns2.example.net."}),
+        # Change its TTL: deleting the apex NS RRset would be ignored
+        (r"s/^(@ +)300( +IN +NS )/\1600\2/", {"600 IN NS ns1.example.net."}),
+        # Both at once
+        (r"s/^(@ +)300( +IN +NS +)ns1\./\1600\2ns2./", {"600 IN NS ns2.example.net."}),
+    ],
+)
+def test_apex_ns_change(tmp_path, sed, expected):
+    """RFC 2136 §3.4.2.4: a server ignores deleting the last apex NS record or the
+    apex NS RRset, so zedit adds before it deletes there."""
+    records = "@ IN NS ns1.example.net.\nwww IN A 192.0.2.10\n"
+    with run_named(tmp_path, "unsigned", records=records) as (port, key, tmp):
+        ed = write_editor(tmp, f"sed -i -E '{sed}' \"$1\"\n")
+        r = run_zedit(port, key, tmp, ed, "y\n")
+        assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+        assert {rr.split(" ", 1)[1] for rr in dig(port, key, ZONE, "NS")} == expected
