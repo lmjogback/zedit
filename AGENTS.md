@@ -9,8 +9,11 @@ lists what the code doesn't tell you.
   start a real BIND and need `named`, `nsupdate`, `tsig-keygen` and `dig`
   (also looked for in `/usr/sbin`). If any is missing, the whole module is
   skipped, so check the skip summary: a green run may not have touched BIND.
-- Don't run `uv run --resolution lowest-direct` locally without restoring
-  `uv.lock` afterwards; it rewrites the lockfile. CI's `lowest` job uses it.
+- To test with the oldest allowed dependency versions, as CI's `lowest` job
+  does, run
+  `uv run --isolated --python 3.10 --resolution lowest-direct pytest tests/test_logic.py`.
+  Without `--isolated` it rewrites `uv.lock` and downgrades `.venv`; if that
+  happened, `git restore uv.lock && uv sync --locked` puts both back.
 
 ## When you change behaviour
 
