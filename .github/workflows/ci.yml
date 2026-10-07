@@ -82,4 +82,7 @@ jobs:
           sudo ln -sf /etc/apparmor.d/usr.sbin.named /etc/apparmor.d/disable/ || true
           sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.named || true
           sudo systemctl stop named || true
-      - run: uv run pytest -v
+      - run: uv run pytest -v -rs
+        env:
+          # BIND is installed above: a skipped integration test is a failure here
+          ZEDIT_REQUIRE_INTEGRATION: "1"
