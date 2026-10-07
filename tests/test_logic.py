@@ -790,3 +790,21 @@ def test_signal_warnings():
     )
     (warning,) = cli.signal_warnings(base, new)
     assert warning.startswith("_dsbot.c.example CDS is not at a _dsboot name")
+
+
+@pytest.mark.parametrize(
+    ("base", "mine", "theirs"),
+    [
+        ("alias CNAME old\n", "alias CNAME mine\n", "alias CNAME theirs\n"),
+        ("", "alias CNAME mine\n", "alias CNAME theirs\n"),  # added on both sides
+    ],
+)
+def test_merge_singleton_type_is_a_conflict(base, mine, theirs):
+    """A CNAME holds one record, so mine and the server's can't be merged as a
+    union: dnspython would keep one of them depending on hash order. It is a
+    conflict, and mine is kept."""
+    merged, notes, dropped, conflicts = cli.merge3(model(base)[0], model(mine)[0], model(theirs)[0])
+    k = key("alias", "CNAME")
+    assert [r.to_text() for r in merged[k]] == ["mine"]
+    assert conflicts == 1
+    assert any(line.startswith("; CONFLICT CNAME:") and "mine kept" in line for line in notes[k])

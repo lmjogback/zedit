@@ -621,7 +621,8 @@ def merge_scalar(b, m, t):
 
 def merge3(base, mine, theirs):
     """Per RRset: unchanged by me -> theirs; unchanged on the server -> mine;
-    changed on both sides -> rdata set merge: theirs + my additions - my deletions."""
+    changed on both sides -> rdata set merge: theirs + my additions - my deletions,
+    except for single-record types (CNAME etc.), where two values are a conflict."""
     merged, notes, dropped, conflicts = {}, {}, [], 0
     for k in set(base) | set(mine) | set(theirs):
         b, m, t = base.get(k), mine.get(k), theirs.get(k)
@@ -644,6 +645,15 @@ def merge3(base, mine, theirs):
                     note.append(
                         f"; CONFLICT TTL: base={b.ttl if b else '-'} server={t.ttl} mine={m.ttl} - mine kept"
                     )
+            if len(rd) > 1 and dns.rdatatype.is_singleton(k[1]):
+                # CNAME, DNAME etc. hold a single record, so two values can't be
+                # merged as a union (dnspython would keep one, in hash order)
+                conflicts += 1
+                note.append(
+                    f"; CONFLICT {tname(k[1])}: base={b[0].to_text() if b else '-'} "
+                    f"server={t[0].to_text()} mine={m[0].to_text()} - mine kept"
+                )
+                rd = set(m)
             r = dns.rdataset.from_rdata_list(ttl, list(rd)) if rd else None
             if r is None:
                 dropped.append(f"{k[0]} {tname(k[1])}")

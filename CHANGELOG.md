@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fix: when a rebase met a CNAME (or another single-record type) changed to
+  different values by you and on the server, it kept one of them at random and
+  reported no conflict. It is now a conflict: yours is kept, marked
+  `; CONFLICT`, and the editor opens.
+
 ## 1.2.0 - 2026-10-07
 
 - CDS and CDNSKEY records can now be edited below the zone's apex, so DNS

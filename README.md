@@ -231,7 +231,8 @@ new AXFR and merges per RRset:
 - changed only on the server → theirs
 - changed on both sides → server RRs + your additions − your deletions,
   marked `; MERGED` in the file
-- conflicting TTL or SOA field → yours wins, marked `; CONFLICT`, and the
+- conflicting TTL or SOA field, or two different values of a single-record
+  type such as CNAME → yours wins, marked `; CONFLICT`, and the
   editor opens for review
 
 Rebasing after a timeout is safe: changes that did get applied simply drop out.
