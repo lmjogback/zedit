@@ -47,3 +47,6 @@ The actions in `.github/workflows/ci.yml` are pinned by commit SHA with the
 version as a comment (`@<sha> # v7.0.1`). Keep that form when changing them;
 Dependabot (`.github/dependabot.yml`) proposes updates weekly. Check a SHA with
 `gh api repos/OWNER/ACTION/commits/TAG -q .sha`.
+
+CI runs on pushes to `main`, on `v*` tags and on pull requests. To run it on
+another branch without a pull request: `gh workflow run CI --ref BRANCH`.
