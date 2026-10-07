@@ -3,9 +3,39 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Version, changelog and tag agree
+        shell: python3 {0}
+        run: |
+          import os, re, sys, tomllib
+
+          with open("pyproject.toml", "rb") as f:
+              version = tomllib.load(f)["project"]["version"]
+          with open("CHANGELOG.md") as f:
+              m = re.search(r"^## (\d+\.\d+\.\d+)\b", f.read(), re.M)
+          errors = []
+          if not m:
+              errors.append("no '## X.Y.Z' heading in CHANGELOG.md")
+          elif m.group(1) != version:
+              errors.append(f"pyproject.toml has {version}, latest CHANGELOG.md entry is {m.group(1)}")
+          if os.environ.get("GITHUB_REF_TYPE") == "tag" and os.environ["GITHUB_REF_NAME"] != f"v{version}":
+              errors.append(f"tag {os.environ['GITHUB_REF_NAME']} does not match pyproject.toml version {version}")
+          for e in errors:
+              print(f"::error::{e}")
+          if errors:
+              sys.exit(1)
+          print(f"version {version} OK")
+
   lint:
     runs-on: ubuntu-latest
     steps:
