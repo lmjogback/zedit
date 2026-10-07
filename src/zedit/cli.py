@@ -57,8 +57,7 @@ FILTERED = {46, 47, 48, 50, 51, 59, 60, 63, 65534}
 # Omitted from --show-all by --no-rrsig: the bulky, constantly changing ones
 NOISY = {46, 47, 50}  # RRSIG, NSEC, NSEC3
 SOA_EDITABLE = ("rname", "refresh", "retry", "expire", "minimum")
-LOCKED_SOA = ("mname", "serial")
-LOCK_SOA_TTL = True
+LOCKED_SOA = ("mname", "serial")  # and the SOA record's own TTL
 
 
 class ZeditError(Exception):
@@ -406,7 +405,7 @@ def parse_file(path, origin, base_soa):
         m, soa = parse_text(f.read(), origin)
     o, n = base_soa[0], soa[0]
     locked = [f.upper() for f in LOCKED_SOA if getattr(o, f) != getattr(n, f)]
-    if LOCK_SOA_TTL and base_soa.ttl != soa.ttl:
+    if base_soa.ttl != soa.ttl:
         locked.append("SOA record TTL")
     if locked:
         raise ValueError(f"locked SOA fields changed: {', '.join(locked)}")
@@ -633,14 +632,8 @@ def merge_soa(b, m, t):
         if c:
             conflicts += 1
             note.append(f"; CONFLICT SOA {f.upper()}: base={bv} server={tv} mine={mv} - mine kept")
-    ttl = t.ttl
-    if not LOCK_SOA_TTL:
-        ttl, c = merge_scalar(b.ttl, m.ttl, t.ttl)
-        if c:
-            conflicts += 1
-            note.append(f"; CONFLICT SOA TTL: base={b.ttl} server={t.ttl} mine={m.ttl} - mine kept")
-    # MNAME and SERIAL always come from the server
-    return dns.rdataset.from_rdata(ttl, t[0].replace(**fields)), note, conflicts
+    # MNAME, SERIAL and the SOA TTL always come from the server
+    return dns.rdataset.from_rdata(t.ttl, t[0].replace(**fields)), note, conflicts
 
 
 def rebase(ctx, base, base_soa, mine, mine_soa):
@@ -793,8 +786,6 @@ def verify(ctx, base, new, base_soa, new_soa, attempts=10):
                     for f in SOA_EDITABLE
                     if getattr(after_soa[0], f) != getattr(new_soa[0], f)
                 ]
-                if not LOCK_SOA_TTL and after_soa.ttl != new_soa.ttl:
-                    bad.append("SOA record TTL")
             if not bad:
                 return []
         time.sleep(min(0.25 * 2**i, 2))
