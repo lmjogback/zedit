@@ -59,10 +59,16 @@ jobs:
       - run: uv run --isolated --resolution lowest-direct pytest -v tests/test_logic.py
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     strategy:
+      fail-fast: false
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          # ubuntu-latest moves to 26.04 between 2026-10-19 and 2026-11-19; try it
+          # early. Remove when the move is done.
+          - python: "3.13"
+            os: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
