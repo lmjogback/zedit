@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 - 2026-10-07
 
 - Fix: when a rebase met a CNAME (or another single-record type) changed to
   different values by you and on the server, it kept one of them at random and
