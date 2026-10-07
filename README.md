@@ -200,7 +200,12 @@ different values, nothing is sent and you can rebase, which marks the conflict.
 The serial sent is `max(transferred, live) + 1` in RFC 1982 arithmetic, since RFC
 2136 §3.4.2.2 silently ignores an SOA whose serial isn't greater. The SOA can't be
 locked with a prerequisite (see below), so a change made in the milliseconds
-between reading it and sending is still overwritten.
+between reading it and sending is still overwritten. With inline-signing that
+window is as long as the server takes to sign a change, usually under a second:
+the SOA zedit reads comes from the signed zone, which follows the unsigned one.
+Mostly the server then ignores zedit's SOA, because the unsigned zone's serial
+has already moved past it, and zedit reports the update as not verified (exit
+status 3); resume to try again.
 
 **Semantic diff.** Both sides are parsed and re-rendered canonically before
 diffing, so whitespace, alignment, comments, ordering and equivalent rdata

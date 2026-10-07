@@ -493,9 +493,16 @@ def test_bootstrapping_signals(tmp_path, signing):
 
 
 def concurrent_soa(key, port, fields):
-    """Shell snippet: the server's SOA changed by someone else while editing."""
+    """Shell snippet: the server's SOA changed by someone else while editing.
+    It waits until the server answers with the change: with inline-signing the
+    signed zone, which answers queries, follows the unsigned one a moment later,
+    and zedit can only see the change once it is there (see README, "SOA")."""
+    timers = " ".join(fields.split()[1:])  # REFRESH RETRY EXPIRE MINIMUM; the signed serial differs
     return nsupdate(
         key, port, f"update add example.com. 3600 IN SOA ns1.example.net. hostmaster.example.net. {fields}"
+    ) + (
+        f"for i in $(seq 100); do {TOOLS['dig']} +short -p {port} @127.0.0.1 {ZONE} SOA"
+        f' | grep -q " {timers}$" && break; sleep 0.1; done\n'
     )
 
 
