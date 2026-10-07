@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.2 - 2026-10-07
 
 - Fix: in a zone whose SOA RNAME is inside the zone (say
   `hostmaster.example.com.` in `example.com`), changing the RNAME gave a false
@@ -8,6 +8,10 @@
   status 3) although the update was applied. The server's current SOA, read
   when sending since 1.2.1, had its names absolute while the transferred zone
   has them relative.
+- README: with inline-signing, a concurrent SOA change can be missed for as
+  long as the server takes to sign it; mostly the server then ignores zedit's
+  SOA and zedit reports exit status 3. The tests for concurrent SOA changes
+  now wait until the server answers with the change.
 
 ## 1.2.1 - 2026-10-07
 
