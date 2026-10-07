@@ -1,4 +1,5 @@
-"""Run zedit against a real named. Skipped if BIND is not installed."""
+"""Run zedit against a real named. Skipped if BIND is not installed, or if named
+doesn't start; with ZEDIT_REQUIRE_INTEGRATION set (as in CI), that fails instead."""
 
 import contextlib
 import datetime
@@ -22,9 +23,19 @@ def find_tool(name):
     return shutil.which(name) or shutil.which(name, path=SBIN)
 
 
+# In CI, BIND is installed for these tests, so a skip would hide a broken setup
+REQUIRED = bool(os.environ.get("ZEDIT_REQUIRE_INTEGRATION"))
+
+
+def skip(reason, **kwargs):
+    if REQUIRED:
+        pytest.fail(f"{reason} (ZEDIT_REQUIRE_INTEGRATION is set)", pytrace=False)
+    pytest.skip(reason, **kwargs)
+
+
 TOOLS = {name: find_tool(name) for name in ("named", "nsupdate", "tsig-keygen", "dig")}
 if missing := [name for name, path in TOOLS.items() if not path]:
-    pytest.skip(f"not found: {', '.join(missing)}", allow_module_level=True)
+    skip(f"not found: {', '.join(missing)}", allow_module_level=True)
 
 ZONE = "example.com"
 SIGNING = {
@@ -94,23 +105,28 @@ zone "{zone}" {{ type primary; file "{tmp_path}/db.example"; {SIGNING[signing]} 
 """)
     for p in (tmp_path, tmp_path / "keys"):
         os.chmod(p, 0o777)
-    proc = subprocess.Popen(
-        [TOOLS["named"], "-g", "-c", str(tmp_path / "named.conf")],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT,
-    )
+    log = tmp_path / "named.log"
+    with open(log, "w") as out:
+        proc = subprocess.Popen(
+            [TOOLS["named"], "-g", "-c", str(tmp_path / "named.conf")], stdout=out, stderr=subprocess.STDOUT
+        )
     try:
+        ready = False
         for _ in range(100):
+            if proc.poll() is not None:
+                break  # named exited; no point in waiting
             try:
                 rrs = dig(port, key, zone, "AXFR")
                 loaded = any(" SOA " in rr for rr in rrs)  # dig exits 0 on SERVFAIL too
-                if loaded and (signing == "unsigned" or any(" DNSKEY " in rr for rr in rrs)):
-                    break
+                ready = loaded and (signing == "unsigned" or any(" DNSKEY " in rr for rr in rrs))
             except (subprocess.CalledProcessError, DigError):
                 pass
+            if ready:
+                break
             time.sleep(0.1)
-        else:
-            pytest.skip("named did not start or did not sign the zone")
+        if not ready:
+            tail = "\n".join(log.read_text(errors="replace").splitlines()[-25:])
+            skip(f"named did not start or did not load/sign the zone; end of its log:\n{tail}")
         yield port, key, tmp_path
     finally:
         proc.terminate()
