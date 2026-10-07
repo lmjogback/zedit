@@ -6,6 +6,11 @@
   with status 1 as if nothing had been sent, although the update was applied.
   A failed transfer is now retried like a mismatch, and if it keeps failing
   zedit reports the update as not verified (exit status 3).
+- Fix: answering no to `Send?` exited with status 0 and left the saved
+  session behind without saying so. It now exits with status 2, as
+  documented, and prints the `--resume` command.
+- `--dry-run` keeps the session and prints a `--resume` command, so the edit
+  can be sent later without editing it again.
 
 ## 1.0.4 - 2026-10-06
 

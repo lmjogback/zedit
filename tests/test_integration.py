@@ -202,6 +202,30 @@ def test_abort_then_resume(server):
     assert www == {"www.example.com. 300 IN A 192.0.2.12", "www.example.com. 300 IN A 192.0.2.99"}
 
 
+def test_declined_update_keeps_session(server):
+    port, key, tmp = server
+    ed = write_editor(tmp, "sed -i 's/192.0.2.10/192.0.2.12/' \"$1\"\n")
+    r = run_zedit(port, key, tmp, ed, "n\n")
+    assert r.returncode == 2 and "--resume" in r.stderr, r.stdout + r.stderr
+    assert sorted(f.rsplit(".zone", 1)[1] for f in saved_files(tmp)) == ["", ".base"]
+    assert dig(port, key, "www." + ZONE, "A") == {"www.example.com. 300 IN A 192.0.2.10"}
+
+
+def test_dry_run_keeps_session_for_resume(server):
+    port, key, tmp = server
+    ed = write_editor(tmp, "sed -i 's/192.0.2.10/192.0.2.12/' \"$1\"\n")
+    r = run_zedit(port, key, tmp, ed, "y\n", "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "update add www.example.com. 300 IN A 192.0.2.12" in r.stdout
+    assert "without --dry-run" in r.stderr and "--resume" in r.stderr
+    assert dig(port, key, "www." + ZONE, "A") == {"www.example.com. 300 IN A 192.0.2.10"}
+    (saved,) = [f for f in saved_files(tmp) if f.endswith(".zone")]
+    r = run_zedit(port, key, tmp, "true", "y\n", "--resume", str(tmp / "state" / "zedit" / saved))
+    assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+    assert dig(port, key, "www." + ZONE, "A") == {"www.example.com. 300 IN A 192.0.2.12"}
+    assert not saved_files(tmp)
+
+
 def test_silently_ignored_update_is_reported(server):
     # A concurrent CNAME makes BIND silently drop our add (RFC 2136 §3.4.2.2).
     # The prerequisite (no A RRset at foo) still holds, so only verification catches it.

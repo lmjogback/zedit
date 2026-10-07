@@ -921,12 +921,14 @@ def state_dir():
     return d
 
 
-def hint(ctx):
+def hint(ctx, dry_run=False):
     if ctx.path and os.path.exists(ctx.path):
-        print(
-            f"Your changes are saved in {ctx.path}\nResume with: zedit [same options] --resume {ctx.path}",
-            file=sys.stderr,
+        how = (
+            "Send them with: zedit [same options, without --dry-run]"
+            if dry_run
+            else "Resume with: zedit [same options]"
         )
+        print(f"Your changes are saved in {ctx.path}\n{how} --resume {ctx.path}", file=sys.stderr)
 
 
 def cleanup(ctx):
@@ -1008,10 +1010,13 @@ def session(ctx, args):
             print(make_script(ctx, *plan))
         if a == "e":
             continue
-        if a != "y" or args.dry_run:
-            if args.dry_run:
-                print(make_script(ctx, *plan))
+        if a != "y":
             print("Nothing sent.")
+            return 2
+        if args.dry_run:
+            print(make_script(ctx, *plan))
+            print("Nothing sent (--dry-run).")
+            hint(ctx, dry_run=True)
             return 0
 
         ok, out, can_rebase = run_nsupdate(make_script(ctx, *plan), ctx.keyfile)

@@ -58,7 +58,7 @@ zedit [-s SERVER] [-p PORT] [-k KEYFILE] [-a] [--no-rrsig] [-A] [-n] [-r FILE] z
 | `-a`, `--show-all` | Also show DNSSEC and server-maintained records, as read-only `;ro` comment lines |
 | `--no-rrsig` | With `--show-all`, leave out RRSIG, NSEC and NSEC3 (implies `-a`) |
 | `-A`, `--addresses` | In reverse zones, show owner names as IP addresses |
-| `-n`, `--dry-run` | Show the `nsupdate` script, send nothing |
+| `-n`, `--dry-run` | Show the `nsupdate` script, send nothing; the session is kept for `--resume` |
 | `-r`, `--resume FILE` | Resume a saved session (rebases onto the current zone) |
 
 When the server or key comes from a default, zedit prints which ones it uses.
@@ -217,8 +217,9 @@ Rebasing after a timeout is safe: changes that did get applied simply drop out.
 **Saved state.** Each session is stored in `$XDG_STATE_HOME/zedit/`
 (default `~/.local/state/zedit/`) as `ZONE-TIMESTAMP.zone` plus
 `ZONE-TIMESTAMP.zone.base` (the zone as transferred). Both are removed after a
-successful, verified update. On abort or failure zedit prints a `--resume`
-command.
+successful, verified update. On abort or failure, including answering no to
+`Send?`, zedit prints a `--resume` command. So does `--dry-run`: resume without
+`--dry-run` to send the same edit, rebased onto the zone as it is then.
 
 **Exit status.** 0 success (or nothing to do), 1 error or aborted edit,
 2 update rejected or aborted, 3 update accepted but not verified, 130 interrupted.
