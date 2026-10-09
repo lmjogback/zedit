@@ -475,9 +475,22 @@ def check_cname(m):
         raise ValueError("CNAME together with other data: " + ", ".join(bad))
 
 
+def read_text(path):
+    """A session file's text. Always UTF-8, whatever the locale, so that what
+    you type reads the same everywhere."""
+    with open(path, "rb") as f:
+        data = f.read()
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        line = data.count(b"\n", 0, e.start) + 1
+        raise ValueError(
+            f"line {line}: not valid UTF-8 (byte 0x{data[e.start]:02x}); save the file as UTF-8"
+        ) from None
+
+
 def parse_file(path, origin, base_soa):
-    with open(path) as f:
-        m, soa = parse_text(f.read(), origin)
+    m, soa = parse_text(read_text(path), origin)
     o, n = base_soa[0], soa[0]
     locked = [f.upper() for f in LOCKED_SOA if getattr(o, f) != getattr(n, f)]
     if base_soa.ttl != soa.ttl:
@@ -652,7 +665,7 @@ def write_tmp(path, text):
     readable only by the user, since sessions hold zone data."""
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=os.path.basename(path) + ".")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -1244,8 +1257,7 @@ def session(ctx, args):
         if not os.path.exists(ctx.basepath):
             raise ZeditError(f"{ctx.basepath} missing - cannot three-way merge without a base")
         try:
-            with open(ctx.basepath) as f:
-                base, base_soa = parse_text(f.read(), ctx.origin)
+            base, base_soa = parse_text(read_text(ctx.basepath), ctx.origin)
         except (dns.exception.DNSException, ValueError) as e:
             raise ZeditError(f"{ctx.basepath} is invalid: {e}") from e
         try:

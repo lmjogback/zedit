@@ -1056,3 +1056,17 @@ def test_ctrl_c_in_the_editor_doesnt_stop_zedit(tmp_path):
     )
     # The editor died of SIGINT (status -2, default handling); zedit carried on
     assert (r.returncode, r.stdout, r.stderr) == (0, "-2\n", "")
+
+
+def test_session_files_are_utf8(tmp_path):
+    """Read as UTF-8 whatever the locale; a file saved in another encoding is
+    reported with its line, rather than read as something else."""
+    _, base_soa, _ = model("")
+    f = tmp_path / "s.zone"
+    body = "$TTL 300\n" + SOA + '@ NS ns1\ntxt TXT "R\u00e4ksm\u00f6rg\u00e5s"\n'
+    f.write_bytes(body.encode("utf-8"))
+    m, _ = cli.parse_file(str(f), ORIGIN, base_soa)
+    assert m[key("txt", "TXT")][0].strings == ("R\u00e4ksm\u00f6rg\u00e5s".encode(),)
+    f.write_bytes(body.encode("latin-1"))
+    with pytest.raises(ValueError, match="^line 4: not valid UTF-8 \\(byte 0xe4\\)"):
+        cli.parse_file(str(f), ORIGIN, base_soa)
