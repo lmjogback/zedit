@@ -53,6 +53,10 @@
   shown with are easy to miss.
 - README: sign a dynamic zone in place (`inline-signing no`); with
   inline-signing, BIND's `serial-update-method` doesn't apply to updates.
+- Fix: a line break in the SOA RNAME (`\010` in its first label) went
+  unescaped into the "contact:" comment, so the rest of the label became a line
+  of zone data, and zedit offered to add a record nobody wrote. Characters that
+  aren't printable are now shown there as `\DDD`.
 
 ## 1.2.2 - 2026-10-07
 

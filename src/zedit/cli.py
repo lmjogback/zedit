@@ -638,9 +638,14 @@ def human_duration(seconds):
 
 def rname_to_email(rname, origin):
     """SOA RNAME as a mail address: the first label is the local part
-    (it may contain escaped dots, e.g. john\\.doe.example.com.)."""
+    (it may contain escaped dots, e.g. john\\.doe.example.com.). Characters
+    that aren't printable are shown as \\DDD, as in the zone file: the address
+    goes into a comment, and a line break there would end it."""
     name = rname.derelativize(origin)
-    local = name.labels[0].decode(errors="replace")
+    local = "".join(
+        c if c.isprintable() else "".join(f"\\{b:03d}" for b in c.encode())
+        for c in name.labels[0].decode(errors="replace")
+    )
     return f"{local}@{dns.name.Name(name.labels[1:]).to_text(omit_final_dot=True)}"
 
 
