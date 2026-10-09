@@ -260,6 +260,22 @@ def test_abort_then_resume(server):
     assert www == {"www.example.com. 300 IN A 192.0.2.12", "www.example.com. 300 IN A 192.0.2.99"}
 
 
+@pytest.mark.parametrize(
+    ("body", "kept"),
+    [
+        ("exit 1\n", False),  # vim's :cq without a change: nothing to resume
+        ("sed -i 's/192.0.2.10/192.0.2.12/' \"$1\"\nexit 1\n", True),
+        ("echo 'bad line' >> \"$1\"\nexit 1\n", True),
+    ],
+)
+def test_aborted_edit_keeps_session_only_with_changes(tmp_path, body, kept):
+    with run_named(tmp_path, "unsigned") as (port, key, tmp):
+        r = run_zedit(port, key, tmp, write_editor(tmp, body), "a\n")
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert ("--resume" in r.stderr) is kept and ("Aborted without changes." in r.stdout) is not kept
+        assert len(saved_files(tmp)) == (2 if kept else 0)
+
+
 def test_declined_update_keeps_session(server):
     port, key, tmp = server
     ed = write_editor(tmp, "sed -i 's/192.0.2.10/192.0.2.12/' \"$1\"\n")

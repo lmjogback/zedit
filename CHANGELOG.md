@@ -29,6 +29,9 @@
 - Fix: Ctrl-C or Ctrl-\ while the editor ran also interrupted zedit, if the
   editor doesn't take the terminal's signal keys for itself (vim and nano do).
   As git does, zedit now ignores them until the editor exits.
+- Aborting the editor (e.g. vim's `:cq`) without changing anything now removes
+  the session instead of leaving it in the state directory with a `--resume`
+  hint.
 
 ## 1.2.2 - 2026-10-07
 

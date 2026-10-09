@@ -1209,6 +1209,24 @@ def cleanup(ctx):
             os.unlink(p)
 
 
+def discard_if_unchanged(ctx, base, base_soa):
+    """After an aborted edit, remove the session if its file still parses and
+    holds no change from the base: there is nothing to resume. -> removed?"""
+    try:
+        new, new_soa = parse_file(ctx.path, ctx.origin, base_soa)
+    except (dns.exception.DNSException, ValueError, OSError):
+        return False
+    new, new_soa, _ = keep_base_case(base, base_soa, new, new_soa)
+    if (
+        soa_changed(base_soa, new_soa)
+        or set(new) != set(base)
+        or not all(same(base[k], new[k]) for k in base)
+    ):
+        return False
+    cleanup(ctx)
+    return True
+
+
 # ---------------------------------------------------------------- main flow
 
 
@@ -1258,6 +1276,8 @@ def session(ctx, args):
         if need_edit:
             r = edit_until_valid(ctx.path, ctx.origin, base_soa)
             if r is None:
+                if discard_if_unchanged(ctx, base, base_soa):
+                    print("Aborted without changes.")
                 return 1
             new, new_soa = r
         else:
