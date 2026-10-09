@@ -40,6 +40,8 @@
 - The file you edit is always read and written as UTF-8, whatever the locale.
   Before, non-ASCII text (say in a TXT record) was read with the locale's
   encoding. A file saved in another encoding is now reported with its line.
+- Fix: an error in the last field of a record (say `www A 999.1.1.1`) was
+  reported on the line after it.
 
 ## 1.2.2 - 2026-10-07
 

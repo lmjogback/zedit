@@ -1070,3 +1070,17 @@ def test_session_files_are_utf8(tmp_path):
     f.write_bytes(body.encode("latin-1"))
     with pytest.raises(ValueError, match="^line 4: not valid UTF-8 \\(byte 0xe4\\)"):
         cli.parse_file(str(f), ORIGIN, base_soa)
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        "www A 999.1.1.1\nok A 192.0.2.1",  # the bad field is the line's last
+        "www A 999.1.1.1",
+        "www MX x\nok A 192.0.2.1",
+        "www BOGUS 1\nok A 192.0.2.1",
+    ],
+)
+def test_errors_are_reported_on_their_line(records):
+    with pytest.raises(ValueError, match="^line 4: "):
+        cli.parse_text("$TTL 300\n" + SOA + "@ NS ns1\n" + records + "\n", ORIGIN)
