@@ -47,6 +47,10 @@
   `straße.de` became `strasse.de`, a different domain, instead of
   `xn--strae-oqa.de`. zedit now uses IDNA 2008, and depends on the `idna`
   package for it.
+- A warning when an added SPF, DKIM or DMARC record contains non-ASCII bytes,
+  such as a pasted typographic dash or a domain not written as an A-label
+  (`xn--`). These records must be ASCII, and the `\DDD` escapes they are
+  shown with are easy to miss.
 
 ## 1.2.2 - 2026-10-07
 

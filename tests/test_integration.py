@@ -163,10 +163,12 @@ def server(request, tmp_path):
         yield s
 
 
-def run_zedit(port, key, tmp_path, editor, answers, *extra, zone=ZONE):
-    """Run zedit; key=None means no -k (the default key lookup applies)."""
+def run_zedit(port, key, tmp_path, editor, answers, *extra, zone=ZONE, env=None):
+    """Run zedit; key=None means no -k (the default key lookup applies). env adds
+    to or overrides the environment."""
     env = dict(
         os.environ,
+        **(env or {}),
         PATH=os.pathsep.join([os.path.dirname(TOOLS["nsupdate"]), os.environ.get("PATH", "")]),
         EDITOR=str(editor),
         XDG_STATE_HOME=str(tmp_path / "state"),
@@ -624,3 +626,14 @@ def test_case_only_change_is_not_sent(tmp_path):
         assert r.returncode == 0, r.stdout + r.stderr
         assert "case-only changes are not sent: www A" in r.stdout
         assert "No differences from the server" in r.stdout and saved_files(tmp) == []
+
+
+def test_non_ascii_spf_warns_and_is_sent_as_written(tmp_path):
+    """A pasted en dash in an SPF record: a warning before sending, and the
+    record is still sent byte for byte, as UTF-8 from the file."""
+    with run_named(tmp_path, "unsigned") as (port, key, tmp):
+        ed = write_editor(tmp, 'printf \'@ TXT "v=spf1 \\342\\200\\223all"\\n\' >> "$1"\n')
+        r = run_zedit(port, key, tmp, ed, "y\n", env={"LC_ALL": "C"})
+        assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+        assert "Warning: @ TXT: SPF records must be ASCII" in r.stdout
+        assert dig(port, key, ZONE, "TXT") == {'example.com. 300 IN TXT "v=spf1 \\226\\128\\147all"'}
