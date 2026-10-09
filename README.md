@@ -215,17 +215,18 @@ When you change the SOA, zedit reads the server's current SOA at the moment of
 sending and merges the editable fields three ways: a field changed only on the
 server since the transfer keeps the server's value, so a concurrent change to
 another field isn't overwritten. The locked MNAME and SOA TTL are sent as the
-server has them then, so a concurrent change to them isn't reverted either. If you and the server changed the same field to
-different values, nothing is sent and you can rebase, which marks the conflict.
-The serial sent is `max(transferred, live) + 1` in RFC 1982 arithmetic, since RFC
-2136 §3.4.2.2 silently ignores an SOA whose serial isn't greater. The SOA can't be
-locked with a prerequisite (see below), so a change made in the milliseconds
-between reading it and sending is still overwritten. With inline-signing that
-window is as long as the server takes to sign a change, usually under a second:
-the SOA zedit reads comes from the signed zone, which follows the unsigned one.
-Mostly the server then ignores zedit's SOA, because the unsigned zone's serial
-has already moved past it, and zedit reports the update as not verified (exit
-status 3); resume to try again.
+server has them then, so a concurrent change to them isn't reverted either. If
+you and the server changed the same field to different values, nothing is sent
+and you can rebase, which marks the conflict. The serial sent is
+`max(transferred, live) + 1` in RFC 1982 arithmetic, since RFC 2136 §3.4.2.2
+silently ignores an SOA whose serial isn't greater. The SOA can't be locked with
+a prerequisite (see below), so a change made in the milliseconds between reading
+it and sending is still overwritten. With inline-signing that window is as long
+as the server takes to sign a change, usually under a second: the SOA zedit
+reads comes from the signed zone, which follows the unsigned one. Mostly the
+server then ignores zedit's SOA, because the unsigned zone's serial has already
+moved past it, and zedit reports the update as not verified (exit status 3);
+resume to try again.
 
 **Semantic diff.** Both sides are parsed and re-rendered canonically before
 diffing, so whitespace, alignment, comments, ordering and equivalent rdata
@@ -258,10 +259,11 @@ edit.
 **Verification.** After a successful `nsupdate`, zedit transfers the zone again
 and checks that every changed RRset matches your edit. It retries for about 15
 seconds, since inline-signing updates the signed zone asynchronously; a retry
-queries the SOA first and transfers again only if the serial has moved. BIND silently drops some
-updates, e.g. an add that violates the CNAME rule, an SOA with a non-greater
-serial, or TTLs above a `dnssec-policy` `max-zone-ttl`. Mismatches are listed
-and zedit exits with status 3, as it does if the zone can't be transferred again.
+queries the SOA first and transfers again only if the serial has moved. BIND
+silently drops some updates, e.g. an add that violates the CNAME rule, an SOA
+with a non-greater serial, or TTLs above a `dnssec-policy` `max-zone-ttl`.
+Mismatches are listed and zedit exits with status 3, as it does if the zone
+can't be transferred again.
 
 **Rebase.** On NXRRSET/YXRRSET (or an `nsupdate` timeout) you can rebase. zedit does a
 new AXFR and merges per RRset:
