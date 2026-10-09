@@ -131,9 +131,12 @@ RRset its lowest TTL or keep only the last record.
 **Internationalized names.** Names may be written with non-ASCII letters, as
 owners or in record data (`räksmörgås CNAME straße.de.`). zedit encodes them with
 IDNA 2008, as registries do, and shows them as A-labels (`xn--rksmrgs-5wao1o`).
-The zone file parser's default, IDNA 2003, would turn `straße.de` into
-`strasse.de`, a different domain. Text in TXT records is not a name and is never
-converted: zedit shows its non-ASCII bytes as `\DDD` escapes, as BIND does.
+Before that, names are mapped as in Unicode UTS #46 (non-transitional), as
+browsers do: upper case and full-width forms are folded, so `RÄKA`, `ＲÄＫＡ` and
+`räka` are all `xn--rka-qla`, while `ß` stays `ß`. The zone file parser's
+default, IDNA 2003, would turn `straße.de` into `strasse.de`, a different domain.
+Text in TXT records is not a name and is never converted: zedit shows its
+non-ASCII bytes as `\DDD` escapes, as BIND does.
 SPF, DKIM and DMARC records must be ASCII, with any domain in them written as an
 A-label, so zedit warns when you add one with non-ASCII bytes. That is usually a
 typographic quote, dash or no-break space pasted along with the record.
