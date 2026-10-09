@@ -754,6 +754,31 @@ def rebase(ctx, base, base_soa, mine, mine_soa):
 # ---------------------------------------------------------------- diff -> UPDATE
 
 
+def keep_base_case(base, base_soa, new, new_soa):
+    """DNS names compare case-insensitively, so a change of letter case alone
+    (www CNAME Target for target) is no change to the server: the UPDATE would
+    leave the record as it is. Owner names, records and SOA names equal to ones
+    in the base get the base's spelling back, so that the diff shows only what
+    is sent. -> (new, new_soa, keys whose case was put back)."""
+    out, reverted, base_keys = {}, [], {k: k for k in base}
+    for k, rds in new.items():
+        bk = base_keys.get(k, k)
+        old = {r: r for r in base[bk]} if bk in base else {}
+        rds_out = [old.get(r, r) for r in rds]
+        texts = [r.to_text() for r in rds]
+        if bk[0].to_text() != k[0].to_text() or texts != [r.to_text() for r in rds_out]:
+            reverted.append(bk)
+            rds = dns.rdataset.from_rdata_list(rds.ttl, rds_out)
+        out[bk] = rds
+    o, n = base_soa[0], new_soa[0]
+    names = {f: getattr(o, f) for f in ("mname", "rname") if getattr(o, f) == getattr(n, f)}
+    soa_rd = n.replace(**names)
+    if soa_rd.to_text() != n.to_text():
+        reverted.insert(0, (dns.name.empty, SOA))
+        new_soa = dns.rdataset.from_rdata(new_soa.ttl, soa_rd)
+    return out, new_soa, reverted
+
+
 def compute_update(old, new, origin):
     """-> (deletes, adds, final deletes). Deletes go before adds (handles e.g.
     A -> CNAME), except at the apex NS RRset: RFC 2136 §3.4.2.4 has the server
@@ -1190,6 +1215,12 @@ def session(ctx, args):
                 continue
         need_edit = True
 
+        new, new_soa, recased = keep_base_case(base, base_soa, new, new_soa)
+        if recased:
+            print(
+                "Letter case in DNS names is not significant, so case-only changes are not sent: "
+                + ", ".join(f"{k[0]} {tname(k[1])}" for k in recased)
+            )
         old_lines = [soa_line(base_soa, ctx.origin)] + rr_lines(base, ctx.origin, addresses=ctx.addresses)
         new_lines = [soa_line(new_soa, ctx.origin)] + rr_lines(new, ctx.origin, addresses=ctx.addresses)
         if old_lines == new_lines:

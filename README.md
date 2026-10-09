@@ -215,7 +215,10 @@ status 3); resume to try again.
 
 **Semantic diff.** Both sides are parsed and re-rendered canonically before
 diffing, so whitespace, alignment, comments, ordering and equivalent rdata
-spellings (`www` vs `www.example.com.`) don't show up as changes. On a terminal
+spellings (`www` vs `www.example.com.`) don't show up as changes. Nor does a
+change of letter case alone (`Target` for `target`): DNS names compare
+case-insensitively, so the server would keep the record as it is. zedit puts
+the original spelling back and says so. On a terminal
 the diff is coloured, unless `NO_COLOR` is set.
 
 **Minimal atomic update.** Only changed RRs are sent, deletes before adds,

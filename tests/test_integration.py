@@ -597,3 +597,14 @@ def test_soa_change_with_rname_inside_the_zone(tmp_path, signing, sed, rname, re
         assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
         (rr,) = dig(port, key, ZONE, "SOA")
         assert rr.split()[5] == rname and rr.split()[7] == refresh
+
+
+def test_case_only_change_is_not_sent(tmp_path):
+    """Changing only letter case gives no UPDATE, so zedit says so instead of
+    sending an empty one and reporting it as verified."""
+    with run_named(tmp_path, "unsigned") as (port, key, tmp):
+        ed = write_editor(tmp, "sed -i -E 's/^www( .*)$/WWW\\1/' \"$1\"\n")
+        r = run_zedit(port, key, tmp, ed, "y\n")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "case-only changes are not sent: www A" in r.stdout
+        assert "No differences from the server" in r.stdout and saved_files(tmp) == []

@@ -10,6 +10,11 @@
   them (raising the TTL on one line of a multi-record RRset gave "No
   differences"), and a second CNAME, SOA or other single-record type at a name
   silently replaced the first. Both are now errors on the offending line.
+- Fix: a change of letter case alone (`www CNAME Target` for `target`, or an
+  owner name) showed in the diff, but the UPDATE was empty, since DNS names
+  compare case-insensitively; zedit still reported "Updated and verified".
+  The original spelling is now kept, with a note, and only real changes are
+  shown and sent.
 
 ## 1.2.2 - 2026-10-07
 

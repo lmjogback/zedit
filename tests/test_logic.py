@@ -973,3 +973,22 @@ def test_live_soa_names_are_relative_like_the_transfer(monkeypatch):
     assert live.ttl == 3600
     answer = answer.replace("hostmaster.example.com.", "hostmaster.example.net.")
     assert cli.live_soa(ctx)[0].rname.to_text() == "hostmaster.example.net."
+
+
+def test_case_only_changes_are_put_back():
+    """DNS names compare case-insensitively: the UPDATE for a case-only change is
+    empty, so the diff must not show one either."""
+    base, base_soa, _ = model("www CNAME target\nmail MX 10 Mx\nmail MX 20 mx2\n")
+    new, new_soa, _ = model(
+        "WWW CNAME Target\nmail MX 10 mx\nmail MX 30 mx3\n", soa=SOA.replace("hostmaster", "HostMaster")
+    )
+    new, new_soa, recased = cli.keep_base_case(base, base_soa, new, new_soa)
+    assert [f"{k[0]} {cli.tname(k[1])}" for k in recased] == ["@ SOA", "www CNAME", "mail MX"]
+    assert cli.rr_lines(new, ORIGIN) == [
+        "mail\t300\tIN\tMX\t10 Mx",
+        "mail\t300\tIN\tMX\t30 mx3",
+        "www\t300\tIN\tCNAME\ttarget",
+    ]
+    assert str(new_soa[0].rname) == "hostmaster" and not cli.soa_changed(base_soa, new_soa)
+    unchanged, _, none = cli.keep_base_case(base, base_soa, base, base_soa)
+    assert none == [] and unchanged == base
