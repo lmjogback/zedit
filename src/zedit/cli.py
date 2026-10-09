@@ -162,6 +162,17 @@ class _Reader(dns.zonefile.Reader):
         super()._eat_line()
 
 
+class _Tokenizer(dns.tokenizer.Tokenizer):
+    """After the last token on a line, the tokenizer has read the newline and
+    counted the next line, then put the newline back without uncounting it, so
+    an error in a record's last field (www A 999.1.1.1) was reported on the
+    line after it."""
+
+    def where(self):
+        filename, line = super().where()
+        return filename, line - (self.ungotten_char == "\n")
+
+
 class _StrictAdds:
     """Wraps the transaction the zone file reader adds records to. dnspython merges
     records into RRsets silently: an RRset gets the lowest TTL of its lines, and
@@ -414,7 +425,7 @@ def read_zone(text, origin):
     except ValueError as e:
         raise users_line(e) from None
     zone = dns.zone.Zone(origin, dns.rdataclass.IN, relativize=True)
-    tok = dns.tokenizer.Tokenizer(expanded, "<edit>")
+    tok = _Tokenizer(expanded, "<edit>")
     try:
         with zone.writer(True) as txn:
             reader = _Reader(
