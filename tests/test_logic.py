@@ -307,6 +307,16 @@ def test_soa_help_is_comment_only():
     assert soa2[0] == soa[0] and set(m2) == set(m)
 
 
+def test_rname_control_characters_stay_in_the_comment():
+    rname = r"x\010evil\032TXT\032\034injected\034\013\226\128\168"
+    soa = f"@ 3600 IN SOA ns1 {rname} 100 7200 900 1209600 300\n"
+    m, soa_rds, _ = model("www A 192.0.2.1\n", soa=soa)
+    text = cli.render_file(soa_rds, m, ORIGIN, "x")
+    assert 'contact: x\\010evil TXT "injected"\\013\\226\\128\\168@example.com' in text  # U+2028 too
+    m2, soa2 = cli.parse_text(text, ORIGIN)
+    assert soa2[0] == soa_rds[0] and set(m2) == set(m)
+
+
 def test_file_stem_is_a_safe_file_name():
     assert cli.file_stem(dns.name.from_text("Example.COM.")) == "example.com"
     assert cli.file_stem(dns.name.from_text("16/28.2.0.192.in-addr.arpa.")) == "16_28.2.0.192.in-addr.arpa"
