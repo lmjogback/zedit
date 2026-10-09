@@ -51,6 +51,8 @@
   such as a pasted typographic dash or a domain not written as an A-label
   (`xn--`). These records must be ASCII, and the `\DDD` escapes they are
   shown with are easy to miss.
+- README: sign a dynamic zone in place (`inline-signing no`); with
+  inline-signing, BIND's `serial-update-method` doesn't apply to updates.
 
 ## 1.2.2 - 2026-10-07
 
