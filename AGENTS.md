@@ -34,6 +34,9 @@ guards this. Check it before raising the `dnspython<3` bound.
 
 ## Releases
 
+A release is its own commit on `main`, made after the changes it releases have
+been merged and tested; never put it on a topic branch with other changes.
+
 1. Rename `## Unreleased` to `## X.Y.Z - YYYY-MM-DD`.
 2. Set `version` in `pyproject.toml` and run `uv lock`.
 3. Commit as "Release X.Y.Z" and tag `vX.Y.Z`.
