@@ -123,6 +123,11 @@ signals work and how to set them up with BIND.
 PTR records. Every owner name must stay inside the zone; names that fall outside
 it are reported as an error rather than silently ignored.
 
+**RRsets.** All records of an RRset must have the same TTL, and a single-record
+type such as CNAME or SOA may appear only once per name. Either is reported as an
+error on the offending line, where the zone file parser would silently give the
+RRset its lowest TTL or keep only the last record.
+
 **`$GENERATE`.** You can add ranges of records with `$GENERATE`, with BIND's
 syntax and semantics: `start-stop[/step]`, several `$` and
 `${offset[,width[,base]]}` modifiers per line (bases `d`, `o`, `x`, `X`, and `n`/`N`

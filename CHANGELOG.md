@@ -6,6 +6,10 @@
   change to either made on the server while you were editing was reverted, and
   the update was still reported as verified. They are now taken from the
   server's current SOA, and verification checks the MNAME too.
+- Fix: records with different TTLs in one RRset silently got the lowest of
+  them (raising the TTL on one line of a multi-record RRset gave "No
+  differences"), and a second CNAME, SOA or other single-record type at a name
+  silently replaced the first. Both are now errors on the offending line.
 
 ## 1.2.2 - 2026-10-07
 

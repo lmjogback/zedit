@@ -160,6 +160,40 @@ class _Reader(dns.zonefile.Reader):
         super()._eat_line()
 
 
+class _StrictAdds:
+    """Wraps the transaction the zone file reader adds records to. dnspython merges
+    records into RRsets silently: an RRset gets the lowest TTL of its lines, and
+    a single-record type such as CNAME or SOA keeps only the last line. Both are
+    reported instead, with the line in the tokenizer's text (which must end with
+    a newline: the reader has read a record's end of line when it adds it)."""
+
+    def __init__(self, txn, tok):
+        self._txn, self._tok = txn, tok
+        self._first = {}  # (name, rdtype, covers) -> (ttl, rdata) of its first line
+
+    def __getattr__(self, attr):
+        return getattr(self._txn, attr)
+
+    def add(self, name, ttl, rd):
+        k = (name, rd.rdtype, rd.covers())
+        if k in self._first:
+            first_ttl, first_rd = self._first[k]
+            line = self._tok.where()[1] - 1
+            what = f"{name} {tname(rd.rdtype)}"
+            if dns.rdatatype.is_singleton(rd.rdtype) and rd != first_rd:
+                raise ValueError(
+                    f"line {line}: more than one {what} record; a {tname(rd.rdtype)} RRset holds only one"
+                )
+            if ttl != first_ttl:
+                raise ValueError(
+                    f"line {line}: {what}: TTL {ttl} differs from {first_ttl} earlier in the RRset;"
+                    " an RRset has one TTL"
+                )
+        else:
+            self._first[k] = (ttl, rd)
+        return self._txn.add(name, ttl, rd)
+
+
 GENERATE_LINE = re.compile(r"^\$GENERATE[ \t]+(\S+)[ \t]+(\S.*)$", re.IGNORECASE)
 GENERATE_RANGE = re.compile(r"^(\d+)-(\d+)(?:/(\d+))?$")
 GENERATE_TOKEN = re.compile(r"\\.|\$\{([^}]*)\}|\$")
@@ -363,30 +397,36 @@ def rewrite_address_owners(text, origin):
 def read_zone(text, origin):
     """-> (zone, names outside the zone that the reader dropped)."""
     expanded, linemap = expand_generate(text)
-    try:
-        expanded = rewrite_address_owners(expanded, origin)
-    except ValueError as e:
-        # Report the line in the user's file, not in the expanded text
+
+    def users_line(e):
+        """The error with the line in the user's file, not in the expanded text."""
         m = re.match(r"line (\d+): (.*)", str(e), re.S)
-        if m:
-            raise ValueError(f"line {linemap[int(m.group(1)) - 1]}: {m.group(2)}") from None
-        raise
+        if m and int(m.group(1)) <= len(linemap):
+            return ValueError(f"line {linemap[int(m.group(1)) - 1]}: {m.group(2)}")
+        return e
+
+    try:
+        expanded = rewrite_address_owners(expanded, origin) + "\n"
+    except ValueError as e:
+        raise users_line(e) from None
     zone = dns.zone.Zone(origin, dns.rdataclass.IN, relativize=True)
+    tok = dns.tokenizer.Tokenizer(expanded, "<edit>")
     try:
         with zone.writer(True) as txn:
             reader = _Reader(
-                dns.tokenizer.Tokenizer(expanded, "<edit>"),
+                tok,
                 dns.rdataclass.IN,
-                txn,
+                _StrictAdds(txn, tok),
                 # $GENERATE is expanded above; never let dnspython's version run
                 allow_directives={"$ORIGIN", "$TTL"},
             )
             reader.read()
+    except ValueError as e:
+        raise users_line(e) from None
     except dns.exception.DNSException as e:
-        # Point at the line in the user's file, not in the expanded text
         m = re.match(r"<edit>:(\d+):\s*(.*)", str(e), re.S)
-        if m and int(m.group(1)) <= len(linemap):
-            raise ValueError(f"line {linemap[int(m.group(1)) - 1]}: {m.group(2)}") from None
+        if m:
+            raise users_line(ValueError(f"line {m.group(1)}: {m.group(2)}")) from None
         raise
     return zone, sorted({n.to_text() for n in reader.outside})
 
@@ -401,8 +441,6 @@ def parse_text(text, origin):
         raise ValueError(f"records not allowed (DNSSEC, CDS/CDNSKEY at the apex, or SOA outside it): {bad}")
     if soa is None:
         raise ValueError("SOA missing - it may be edited but not removed")
-    if len(soa) != 1:
-        raise ValueError("exactly one SOA is required")
     return m, soa
 
 

@@ -715,6 +715,31 @@ def test_verify_retries_after_failed_transfer(monkeypatch):
     assert verify_with(monkeypatch, [cli.ZeditError("AXFR failed: timed out"), edited]) == []
 
 
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        ("www CNAME a\nwww CNAME b\n", "line 5: more than one www CNAME record"),
+        ("@ SOA ns1 other 100 7200 900 1209600 300\n", "line 4: more than one @ SOA record"),
+        # dnspython would silently give the RRset the lowest TTL
+        ("www 300 A 192.0.2.1\nwww 3600 A 192.0.2.2\n", "line 5: www A: TTL 3600 differs from 300"),
+        ("www 300 A 192.0.2.1\nmail A 192.0.2.9\nwww A 192.0.2.2\n", "line 6: www A: TTL 3600 differs"),
+    ],
+)
+def test_records_dnspython_would_merge_silently_are_errors(body, match):
+    with pytest.raises(ValueError, match=match):
+        cli.parse_text("$TTL 3600\n" + SOA + "@ NS ns1\n" + body, ORIGIN)
+
+
+def test_identical_records_are_not_an_error():
+    m, _ = cli.parse_text(
+        "$TTL 300\n"
+        + SOA
+        + "@ NS ns1\nwww CNAME a\nwww CNAME a.example.com.\nmail A 192.0.2.9\nmail A 192.0.2.9\n",
+        ORIGIN,
+    )
+    assert len(m[key("www", "CNAME")]) == 1 and len(m[key("mail", "A")]) == 1
+
+
 def test_dnspython_reader_hook():
     """zedit relies on private dnspython API: dns.zonefile.Reader calls _eat_line()
     when it drops a record outside the zone, with the owner in last_name (see
@@ -732,6 +757,10 @@ def test_dnspython_reader_hook():
     zone, outside = cli.read_zone(text, ORIGIN)
     assert outside == ["host.elsewhere.org.", "other.example.net."]
     assert {n.to_text() for n in zone.nodes} == {"@", "www", "mail"}
+    # cli._StrictAdds relies on the reader adding each record with
+    # txn.add(name, ttl, rdata); if that changes, it no longer sees the records.
+    with pytest.raises(ValueError, match="TTL 600 differs"):
+        cli.read_zone(SOA + "www 300 IN A 192.0.2.10\nwww 600 IN A 192.0.2.11\n", ORIGIN)
 
 
 def editor_session(monkeypatch, tmp_path, editor, answers):
