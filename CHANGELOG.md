@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- zedit no longer needs `nsupdate` (BIND's `bind9-dnsutils`): it sends the
+  UPDATE itself with dnspython, signed with the same TSIG key it uses for the
+  transfer. `--dry-run` and `[s]cript` still show the update as an `nsupdate`
+  script, which can be sent by hand.
 - Fix: changing the SOA put back the MNAME and SOA TTL from the transfer, so a
   change to either made on the server while you were editing was reverted, and
   the update was still reported as verified. They are now taken from the
