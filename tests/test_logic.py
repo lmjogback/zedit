@@ -1084,3 +1084,17 @@ def test_session_files_are_utf8(tmp_path):
 def test_errors_are_reported_on_their_line(records):
     with pytest.raises(ValueError, match="^line 4: "):
         cli.parse_text("$TTL 300\n" + SOA + "@ NS ns1\n" + records + "\n", ORIGIN)
+
+
+def test_non_ascii_names_use_idna_2008():
+    """As registries do: under IDNA 2003 (dnspython's default) straße.de would
+    become strasse.de, a different domain."""
+    text = "$TTL 300\n" + SOA + "@ NS ns1\nr\u00e4ksm\u00f6rg\u00e5s CNAME stra\u00dfe.de.\n"
+    m, _ = cli.parse_text(text, ORIGIN)
+    assert cli.rr_lines(m, ORIGIN)[1] == "xn--rksmrgs-5wao1o\t300\tIN\tCNAME\txn--strae-oqa.de."
+
+
+@pytest.mark.parametrize("record", ["\u2603 A 192.0.2.1", "x CNAME a\u200db."])
+def test_invalid_idn_is_an_error_on_its_line(record):
+    with pytest.raises(ValueError, match="^line 4: IDNA"):
+        cli.parse_text("$TTL 300\n" + SOA + "@ NS ns1\n" + record + "\n", ORIGIN)

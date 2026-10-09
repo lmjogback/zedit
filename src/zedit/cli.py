@@ -63,6 +63,10 @@ FILTERED = {46, 47, 48, 50, 51, 63, 65534}
 # CDS, CDNSKEY: maintained by the server at the apex. Below it they are ordinary
 # records, e.g. RFC 9615 bootstrapping signals at _dsboot.CHILD._signal.NS-HOST.
 FILTERED_AT_APEX = {59, 60}
+# Names written with non-ASCII letters (räksmörgås) are encoded with IDNA 2008, as
+# registries do. dnspython's default is IDNA 2003, which maps e.g. straße to
+# strasse, a different domain (IDNA 2008: xn--strae-oqa).
+IDNA = dns.name.IDNA_2008
 SIGNAL_LABEL = b"_dsboot"
 # Omitted from --show-all by --no-rrsig: the bulky, constantly changing ones
 NOISY = {46, 47, 50}  # RRSIG, NSEC, NSEC3
@@ -425,7 +429,7 @@ def read_zone(text, origin):
     except ValueError as e:
         raise users_line(e) from None
     zone = dns.zone.Zone(origin, dns.rdataclass.IN, relativize=True)
-    tok = _Tokenizer(expanded, "<edit>")
+    tok = _Tokenizer(expanded, "<edit>", idna_codec=IDNA)
     try:
         with zone.writer(True) as txn:
             reader = _Reader(
@@ -438,6 +442,10 @@ def read_zone(text, origin):
             reader.read()
     except ValueError as e:
         raise users_line(e) from None
+    except dns.name.IDNAException as e:
+        # Raised for an owner name without the reader's location; the tokenizer
+        # is still on its line
+        raise users_line(ValueError(f"line {tok.where()[1]}: {e}")) from None
     except dns.exception.DNSException as e:
         m = re.match(r"<edit>:(\d+):\s*(.*)", str(e), re.S)
         if m:
@@ -1437,7 +1445,7 @@ def main():
     args = make_parser().parse_args()
 
     try:
-        origin = dns.name.from_text(args.zone)
+        origin = dns.name.from_text(args.zone, idna_codec=IDNA)
     except dns.exception.DNSException as e:
         die(f"invalid zone name {args.zone!r}: {e}")
     host = args.server or primary_from_mname(origin)

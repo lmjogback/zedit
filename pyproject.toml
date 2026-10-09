@@ -9,6 +9,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "dnspython>=2.4,<3",
+    "idna>=3.7",  # IDNA 2008 for names with non-ASCII letters; see read_zone()
 ]
 keywords = ["dns", "nsupdate", "rfc2136", "bind", "axfr", "dnssec"]
 classifiers = [

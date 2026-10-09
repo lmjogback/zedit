@@ -128,6 +128,13 @@ type such as CNAME or SOA may appear only once per name. Either is reported as a
 error on the offending line, where the zone file parser would silently give the
 RRset its lowest TTL or keep only the last record.
 
+**Internationalized names.** Names may be written with non-ASCII letters, as
+owners or in record data (`räksmörgås CNAME straße.de.`). zedit encodes them with
+IDNA 2008, as registries do, and shows them as A-labels (`xn--rksmrgs-5wao1o`).
+The zone file parser's default, IDNA 2003, would turn `straße.de` into
+`strasse.de`, a different domain. Text in TXT records is not a name and is never
+converted.
+
 **`$GENERATE`.** You can add ranges of records with `$GENERATE`, with BIND's
 syntax and semantics: `start-stop[/step]`, several `$` and
 `${offset[,width[,base]]}` modifiers per line (bases `d`, `o`, `x`, `X`, and `n`/`N`

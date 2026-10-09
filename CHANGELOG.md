@@ -42,6 +42,11 @@
   encoding. A file saved in another encoding is now reported with its line.
 - Fix: an error in the last field of a record (say `www A 999.1.1.1`) was
   reported on the line after it.
+- Fix: names written with non-ASCII letters were encoded with IDNA 2003, which
+  maps some letters differently from IDNA 2008, the standard registries use:
+  `straße.de` became `strasse.de`, a different domain, instead of
+  `xn--strae-oqa.de`. zedit now uses IDNA 2008, and depends on the `idna`
+  package for it.
 
 ## 1.2.2 - 2026-10-07
 
