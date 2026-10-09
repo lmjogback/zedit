@@ -973,16 +973,25 @@ def verify(ctx, base, new, soa=None, attempts=10):
     None if the SOA wasn't sent). BIND silently drops some updates (CNAME rule, SOA with a
     non-greater serial, TTLs above a dnssec-policy max-zone-ttl), and with
     inline-signing the signed zone is updated asynchronously, hence the retries.
+    A retry transfers the zone again only if its serial has moved since the last
+    transfer, so a lasting mismatch in a large zone costs SOA queries, not AXFRs.
     -> list of RRsets that don't match (empty on success)."""
     changed = [k for k in set(base) | set(new) if not same(base.get(k), new.get(k))]
-    bad = []
+    bad, serial = [], None
     for i in range(attempts):
+        if i:
+            time.sleep(min(0.25 * 2 ** (i - 1), 2))
+        if serial is not None:
+            live = live_soa(ctx)
+            if live is not None and live[0].serial == serial:
+                continue  # the zone hasn't changed since the last transfer
         try:
             after, after_soa, _ = fetch(ctx)
         except ZeditError as e:
             # The update was sent, so this is "not verified" (exit 3), not a plain error; retry
-            bad = [f"(zone transfer for verification failed: {e})"]
+            bad, serial = [f"(zone transfer for verification failed: {e})"], None
         else:
+            serial = after_soa[0].serial
             bad = [
                 f"{k[0]} {tname(k[1])}"
                 for k in sorted(changed, key=sortkey)
@@ -996,7 +1005,6 @@ def verify(ctx, base, new, soa=None, attempts=10):
                 ]
             if not bad:
                 return []
-        time.sleep(min(0.25 * 2**i, 2))
     return bad
 
 

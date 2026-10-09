@@ -243,8 +243,9 @@ TTL, undoing theirs. Verification doesn't notice, since the result matches your
 edit.
 
 **Verification.** After a successful `nsupdate`, zedit transfers the zone again
-(with retries, since inline-signing updates the signed zone asynchronously) and
-checks that every changed RRset matches your edit. BIND silently drops some
+and checks that every changed RRset matches your edit. It retries for about 15
+seconds, since inline-signing updates the signed zone asynchronously; a retry
+queries the SOA first and transfers again only if the serial has moved. BIND silently drops some
 updates, e.g. an add that violates the CNAME rule, an SOA with a non-greater
 serial, or TTLs above a `dnssec-policy` `max-zone-ttl`. Mismatches are listed
 and zedit exits with status 3, as it does if the zone can't be transferred again.

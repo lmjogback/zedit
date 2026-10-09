@@ -32,6 +32,10 @@
 - Aborting the editor (e.g. vim's `:cq`) without changing anything now removes
   the session instead of leaving it in the state directory with a `--resume`
   hint.
+- Verification retries transfer the zone again only when its serial has moved
+  since the last transfer (checked with an SOA query), instead of up to ten
+  full transfers when a change doesn't show up, which was heavy for large
+  zones. The last retry no longer ends with a needless wait.
 
 ## 1.2.2 - 2026-10-07
 

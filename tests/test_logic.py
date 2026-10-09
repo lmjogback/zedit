@@ -694,9 +694,10 @@ def test_owner_sweep(zone):
     assert not mismatches
 
 
-def verify_with(monkeypatch, results):
-    """Run cli.verify() with fetch() returning (or raising) each of results in turn."""
-    calls = iter(results)
+def verify_with(monkeypatch, results, serials=(), attempts=None):
+    """Run cli.verify() with fetch() returning (or raising) each of results in
+    turn, and live_soa() answering with each of serials (then None: no answer)."""
+    calls, live = iter(results), iter(serials)
 
     def fetch(ctx):
         r = next(calls)
@@ -705,10 +706,21 @@ def verify_with(monkeypatch, results):
         return r
 
     monkeypatch.setattr(cli, "fetch", fetch)
+    monkeypatch.setattr(cli, "live_soa", lambda ctx: next((soa_rd(f"{n} 1 2 3 4") for n in live), None))
     monkeypatch.setattr(cli.time, "sleep", lambda s: None)
     base, _, _ = model("www A 192.0.2.10\n")
     new, _, _ = model("www A 192.0.2.11\n")
-    return cli.verify(None, base, new, attempts=len(results))
+    return cli.verify(None, base, new, attempts=attempts or len(results))
+
+
+def test_verify_transfers_again_only_when_the_serial_moved(monkeypatch):
+    """A lasting mismatch (the zone has serial 100): the SOA query shows the zone
+    unchanged, so no further transfer, until the serial moves to 101."""
+    unchanged = model("www A 192.0.2.10\n")
+    edited = model("www A 192.0.2.11\n", soa=SOA.replace(" 100 ", " 101 "))
+    assert verify_with(monkeypatch, [unchanged, edited], serials=[100, 100, 100, 101], attempts=5) == []
+    bad = verify_with(monkeypatch, [unchanged], serials=[100] * 9, attempts=10)
+    assert bad == ["www A"]  # one transfer for ten attempts
 
 
 def test_verify_reports_failed_transfer(monkeypatch):
