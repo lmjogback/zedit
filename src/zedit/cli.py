@@ -31,6 +31,7 @@ import itertools
 import os
 import re
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -1043,9 +1044,17 @@ def run_editor(path):
     """-> the editor's exit status."""
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
     try:
-        return subprocess.call(shlex.split(editor) + [path])
+        p = subprocess.Popen(shlex.split(editor) + [path])
     except OSError as e:
         raise ZeditError(f"cannot run editor {editor!r}: {e}") from e
+    # As git does: Ctrl-C and Ctrl-\ belong to the editor while it runs. Ignored
+    # only after it started, so that it doesn't inherit SIG_IGN.
+    old = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGINT, signal.SIGQUIT)}
+    try:
+        return p.wait()
+    finally:
+        for sig, handler in old.items():
+            signal.signal(sig, handler)
 
 
 def ask(prompt, choices):

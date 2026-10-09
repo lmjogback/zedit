@@ -3,6 +3,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import sys
 
 import dns.exception
 import dns.name
@@ -1027,3 +1028,19 @@ def test_failed_write_leaves_the_session_pair_alone(tmp_path, monkeypatch):
         cli.write_pair(((str(edit), "new edit\n"), (str(base), "new base\n")))
     assert (edit.read_text(), base.read_text()) == ("old edit\n", "old base\n")
     assert sorted(p.name for p in tmp_path.iterdir()) == ["s.zone", "s.zone.base"]
+
+
+def test_ctrl_c_in_the_editor_doesnt_stop_zedit(tmp_path):
+    """The terminal sends SIGINT to the whole foreground process group. The
+    editor gets it, with its default handling; zedit ignores it while waiting.
+    Run in a session of its own, so that the signal doesn't reach pytest."""
+    editor = tmp_path / "ed.sh"
+    editor.write_text("#!/bin/sh\nkill -INT 0\nsleep 1\n")
+    editor.chmod(0o755)
+    code = "import sys; from zedit import cli; print(cli.run_editor(sys.argv[1]))"
+    env = {k: v for k, v in os.environ.items() if k != "VISUAL"} | {"EDITOR": str(editor)}
+    r = subprocess.run(
+        [sys.executable, "-c", code, "f"], env=env, capture_output=True, text=True, start_new_session=True
+    )
+    # The editor died of SIGINT (status -2, default handling); zedit carried on
+    assert (r.returncode, r.stdout, r.stderr) == (0, "-2\n", "")

@@ -26,6 +26,9 @@
   the edit could be left with the server's new serial next to the old base, and
   `--resume` then failed with "locked SOA fields changed: SERIAL". Both files
   are now written out before either is replaced.
+- Fix: Ctrl-C or Ctrl-\ while the editor ran also interrupted zedit, if the
+  editor doesn't take the terminal's signal keys for itself (vim and nano do).
+  As git does, zedit now ignores them until the editor exits.
 
 ## 1.2.2 - 2026-10-07
 
