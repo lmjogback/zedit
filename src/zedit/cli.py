@@ -661,13 +661,21 @@ def write_tmp(path, text):
     return tmp
 
 
-def write_atomic(path, text):
-    tmp = write_tmp(path, text)
+def write_pair(files):
+    """Replace each (path, text) of files, the session file and its base, which
+    must agree. All are written out first, so a failure there (disk full) leaves
+    the old ones in place; only a crash between the renames that follow could
+    leave one old and one new."""
+    tmps = []
     try:
-        os.replace(tmp, path)
-    except BaseException:
-        os.unlink(tmp)
-        raise
+        for path, text in files:
+            tmps.append((write_tmp(path, text), path))
+        while tmps:
+            os.replace(*tmps[0])
+            tmps.pop(0)
+    finally:
+        for tmp, _ in tmps:
+            os.unlink(tmp)
 
 
 # ---------------------------------------------------------------- three-way merge
@@ -754,15 +762,24 @@ def rebase(ctx, base, base_soa, mine, mine_soa):
     conflicts += sconf
     extra = [f"; Rebased: serial {base_soa[0].serial} -> {theirs_soa[0].serial}."]
     extra += [f"; Removed by merge (empty RRset): {d}" for d in dropped]
-    # Write the edit first, then the base: if we crash in between, the next
-    # rebase is still correct (merged already contains the server's changes).
-    write_atomic(
-        ctx.path,
-        render_file(
-            msoa, merged, ctx.origin, ctx.label, notes, extra, shown(ctx, theirs_hidden), ctx.addresses
-        ),
+    write_pair(
+        (
+            (
+                ctx.path,
+                render_file(
+                    msoa,
+                    merged,
+                    ctx.origin,
+                    ctx.label,
+                    notes,
+                    extra,
+                    shown(ctx, theirs_hidden),
+                    ctx.addresses,
+                ),
+            ),
+            (ctx.basepath, render_file(theirs_soa, theirs, ctx.origin, ctx.label)),
+        )
     )
-    write_atomic(ctx.basepath, render_file(theirs_soa, theirs, ctx.origin, ctx.label))
     print(
         f"Rebased onto serial {theirs_soa[0].serial}: {len(notes)} RRset(s) changed on "
         f"both sides, {conflicts} conflict(s), {len(dropped)} removed."
@@ -1210,12 +1227,21 @@ def session(ctx, args):
         base, base_soa, hidden = fetch(ctx)
         ctx.path = new_session_path(ctx.origin)
         ctx.basepath = ctx.path + ".base"
-        write_atomic(ctx.basepath, render_file(base_soa, base, ctx.origin, ctx.label))
-        write_atomic(
-            ctx.path,
-            render_file(
-                base_soa, base, ctx.origin, ctx.label, hidden=shown(ctx, hidden), addresses=ctx.addresses
-            ),
+        write_pair(
+            (
+                (ctx.basepath, render_file(base_soa, base, ctx.origin, ctx.label)),
+                (
+                    ctx.path,
+                    render_file(
+                        base_soa,
+                        base,
+                        ctx.origin,
+                        ctx.label,
+                        hidden=shown(ctx, hidden),
+                        addresses=ctx.addresses,
+                    ),
+                ),
+            )
         )
         need_edit = True
 

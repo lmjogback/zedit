@@ -999,11 +999,31 @@ def test_case_only_changes_are_put_back():
     assert none == [] and unchanged == base
 
 
-def test_write_atomic_is_private_and_ignores_planted_symlinks(tmp_path):
+def test_writes_are_private_and_ignores_planted_symlinks(tmp_path):
     path = tmp_path / "s.zone"
     target = tmp_path / "elsewhere"
     (tmp_path / "s.zone.tmp").symlink_to(target)  # the name the old code wrote to
-    cli.write_atomic(str(path), "x\n")
+    cli.write_pair(((str(path), "x\n"),))
     assert path.read_text() == "x\n" and oct(path.stat().st_mode & 0o777) == "0o600"
     assert not target.exists()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["s.zone", "s.zone.tmp"]
+
+
+def test_failed_write_leaves_the_session_pair_alone(tmp_path, monkeypatch):
+    """If writing the second file fails (say the disk is full), neither file is
+    replaced: an edit with the new serial next to the old base couldn't be resumed."""
+    edit, base = tmp_path / "s.zone", tmp_path / "s.zone.base"
+    edit.write_text("old edit\n")
+    base.write_text("old base\n")
+    write_tmp = cli.write_tmp
+
+    def full_disk(path, text):
+        if path == str(base):
+            raise OSError(28, "No space left on device")
+        return write_tmp(path, text)
+
+    monkeypatch.setattr(cli, "write_tmp", full_disk)
+    with pytest.raises(OSError):
+        cli.write_pair(((str(edit), "new edit\n"), (str(base), "new base\n")))
+    assert (edit.read_text(), base.read_text()) == ("old edit\n", "old base\n")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["s.zone", "s.zone.base"]

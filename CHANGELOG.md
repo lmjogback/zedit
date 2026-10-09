@@ -22,6 +22,10 @@
   fixed `FILE.tmp` name, following a symlink planted there (relevant when
   `--resume FILE` is in a shared directory). They are now written through a
   new, exclusively created file readable only by you.
+- Fix: if writing the rebased session failed halfway (say the disk was full),
+  the edit could be left with the server's new serial next to the old base, and
+  `--resume` then failed with "locked SOA fields changed: SERIAL". Both files
+  are now written out before either is replaced.
 
 ## 1.2.2 - 2026-10-07
 
