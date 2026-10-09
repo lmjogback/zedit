@@ -40,6 +40,19 @@ uvx --from git+https://github.com/lmjogback/zedit zedit --help
 
 `pipx install git+https://github.com/lmjogback/zedit` works too.
 
+To try a change before it is released, add `@BRANCH` (or a tag or commit) to
+the URL. `--refresh` makes uv fetch the branch again instead of using a cached
+copy, and `--force` replaces an installed zedit:
+
+```sh
+uvx --refresh --from git+https://github.com/lmjogback/zedit@BRANCH zedit --help
+uv tool install --force git+https://github.com/lmjogback/zedit@BRANCH
+# back to main
+uv tool install --force git+https://github.com/lmjogback/zedit
+```
+
+Until the release, `zedit --version` shows the previous version number.
+
 ## Usage
 
 ```
