@@ -36,6 +36,7 @@
   since the last transfer (checked with an SOA query), instead of up to ten
   full transfers when a change doesn't show up, which was heavy for large
   zones. The last retry no longer ends with a needless wait.
+- README: zedit is tested with BIND 9.18 and 9.20, not 9.20 only.
 
 ## 1.2.2 - 2026-10-07
 

@@ -91,7 +91,7 @@ chmod 600 ~/.config/zedit/default.key
 
 zedit uses only standard protocols: AXFR (RFC 5936) and UPDATE (RFC 2136), both
 with TSIG. It should work with any server that supports them, but it is tested
-with BIND 9.20 only, and the examples here are for BIND. Reports on other servers
+with BIND only (9.18 and 9.20), and the examples here are for BIND. Reports on other servers
 are welcome.
 
 The key needs transfer rights and an update policy covering every type you
