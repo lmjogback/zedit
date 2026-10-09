@@ -271,9 +271,9 @@ Both are removed after a successful, verified update, and when you abort the
 editor without having changed anything. On any other abort or failure,
 including answering no to `Send?`, zedit prints a `--resume` command. So does
 `--dry-run`: resume without `--dry-run` to send the same edit, rebased onto the
-zone as it is then. The files are readable only by you, and the directory is
-created accessible only to you; zedit warns, but changes nothing, if its
-permissions have since been opened to others.
+zone as it is then. The files are UTF-8 and readable only by you, and the
+directory is created accessible only to you; zedit warns, but changes nothing,
+if its permissions have since been opened to others.
 
 **Exit status.** 0 success (or nothing to do), 1 error or aborted edit,
 2 update rejected or aborted, 3 update accepted but not verified, 130 interrupted.

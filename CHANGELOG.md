@@ -37,6 +37,9 @@
   full transfers when a change doesn't show up, which was heavy for large
   zones. The last retry no longer ends with a needless wait.
 - README: zedit is tested with BIND 9.18 and 9.20, not 9.20 only.
+- The file you edit is always read and written as UTF-8, whatever the locale.
+  Before, non-ASCII text (say in a TXT record) was read with the locale's
+  encoding. A file saved in another encoding is now reported with its line.
 
 ## 1.2.2 - 2026-10-07
 
