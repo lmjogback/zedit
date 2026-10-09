@@ -251,7 +251,8 @@ def expand_generate(text):
     -> (expanded text, original line number for each line of the expanded text)."""
     out, linemap = [], []
     for n, line in enumerate(text.split("\n"), 1):
-        m = GENERATE_LINE.match(line)
+        # Without its comment, where a '$' is no modifier
+        m = GENERATE_LINE.match(line[: scan_line(line)[0]].rstrip())
         if not m:
             out.append(line)
             linemap.append(n)
@@ -354,11 +355,12 @@ def owner_to_name(token, origin):
     return address_to_name(address, origin).to_text()
 
 
-def paren_delta(line):
-    """Net change in parenthesis depth on a zone file line (quotes, escapes and
-    comments respected), to know whether the next line continues a record."""
+def scan_line(line):
+    """-> (where the comment on a zone file line starts, or len(line); the net
+    change in parenthesis depth, to know whether the next line continues a
+    record). Quotes and escapes are respected."""
     depth, quoted, escaped = 0, False, False
-    for ch in line:
+    for i, ch in enumerate(line):
         if escaped:
             escaped = False
         elif ch == "\\":
@@ -366,12 +368,12 @@ def paren_delta(line):
         elif ch == '"':
             quoted = not quoted
         elif not quoted and ch == ";":
-            break
+            return i, depth
         elif not quoted and ch == "(":
             depth += 1
         elif not quoted and ch == ")":
             depth -= 1
-    return depth
+    return len(line), depth
 
 
 def rewrite_address_owners(text, origin):
@@ -389,7 +391,7 @@ def rewrite_address_owners(text, origin):
                 raise ValueError(f"line {n}: {e}") from None
             if name:
                 line = name + line[len(token) :]
-        depth = max(depth + paren_delta(line), 0)
+        depth = max(depth + scan_line(line)[1], 0)
         out.append(line)
     return "\n".join(out)
 

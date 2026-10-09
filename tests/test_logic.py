@@ -358,6 +358,11 @@ def test_generate_range_and_step():
     ]
 
 
+def test_generate_leaves_the_comment_alone():
+    """A '$' in the comment is no modifier, and the comment isn't repeated."""
+    assert generated('$GENERATE 1-2 $ TXT "a;$" ; see ${docs}, $5') == ['1 TXT "a;1"', '2 TXT "a;2"']
+
+
 @pytest.mark.parametrize(
     "line, match",
     [

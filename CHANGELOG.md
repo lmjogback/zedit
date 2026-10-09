@@ -15,6 +15,8 @@
   compare case-insensitively; zedit still reported "Updated and verified".
   The original spelling is now kept, with a note, and only real changes are
   shown and sent.
+- Fix: `$GENERATE` substituted `$` inside a comment at the end of the line too,
+  so `; see ${docs}` failed with "bad $GENERATE modifier".
 
 ## 1.2.2 - 2026-10-07
 

@@ -131,7 +131,8 @@ RRset its lowest TTL or keep only the last record.
 **`$GENERATE`.** You can add ranges of records with `$GENERATE`, with BIND's
 syntax and semantics: `start-stop[/step]`, several `$` and
 `${offset[,width[,base]]}` modifiers per line (bases `d`, `o`, `x`, `X`, and `n`/`N`
-for `ip6.arpa` nibbles) and `\$` for a literal `$`:
+for `ip6.arpa` nibbles) and `\$` for a literal `$`. A comment at the end of the
+line is left alone:
 
 ```
 $GENERATE 20-29 $ PTR host$.example.com.
