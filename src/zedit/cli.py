@@ -481,6 +481,43 @@ def signal_warnings(base, new):
     ]
 
 
+TXT = int(dns.rdatatype.TXT)
+SPF_RECORD = re.compile(rb"v=spf1(?: |$)", re.IGNORECASE)
+
+
+def ascii_kind(name, rd):
+    """'SPF', 'DKIM' or 'DMARC' for a TXT record of a protocol that is ASCII
+    only (RFC 7208, 6376, 7489), else None."""
+    text = b"".join(rd.strings)
+    labels = [label.lower() for label in name.labels]
+    if SPF_RECORD.match(text):
+        return "SPF"
+    if b"_domainkey" in labels[1:2]:  # SELECTOR._domainkey[.SUB]
+        return "DKIM"
+    if labels[:1] == [b"_dmarc"]:
+        return "DMARC"
+    return None
+
+
+def ascii_warnings(base, new):
+    """Non-ASCII bytes in an added SPF, DKIM or DMARC record: typically a
+    pasted typographic quote, dash or no-break space, or a domain written in
+    Unicode instead of as an A-label. Shown as \\DDD escapes, but easy to miss."""
+    out = []
+    for k in sorted(new, key=sortkey):
+        if k[1] != TXT:
+            continue
+        old = base.get(k) or ()
+        for rd in sorted(new[k], key=lambda r: r.to_text()):
+            kind = ascii_kind(k[0], rd)
+            if kind and rd not in old and any(b < 0x20 or b > 0x7E for s in rd.strings for b in s):
+                out.append(
+                    f"{k[0]} TXT: {kind} records must be ASCII, and this one isn't; "
+                    "domain names in it must be A-labels (xn--...)"
+                )
+    return out
+
+
 def check_cname(m):
     """BIND *silently* ignores adds that violate the CNAME rule (RFC 2136 §3.4.2.2),
     so this must be caught here rather than relying on the server."""
@@ -1351,7 +1388,7 @@ def session(ctx, args):
             f"\n{len(dels) + len(final)} delete, {len(adds)} add{', SOA changed' if with_soa else ''}"
             " in 1 atomic UPDATE."
         )
-        for w in signal_warnings(base, new):
+        for w in signal_warnings(base, new) + ascii_warnings(base, new):
             print(f"Warning: {w}")
 
         while True:

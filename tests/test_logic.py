@@ -905,6 +905,23 @@ def test_signal_warnings():
     assert warning.startswith("_dsbot.c.example CDS is not at a _dsboot name")
 
 
+def test_ascii_warnings():
+    base, _, _ = model('old TXT "v=spf1 include:r\u00e4ksm\u00f6rg\u00e5s.se -all"\n')
+    new, _, _ = model(
+        'old TXT "v=spf1 include:r\u00e4ksm\u00f6rg\u00e5s.se -all"\n'  # unchanged: no warning
+        '@ TXT "v=spf1 ip4:192.0.2.0/24 \u2013all"\n'  # pasted en dash
+        'ok TXT "v=spf1 -all"\n'
+        'sel._domainkey TXT "v=DKIM1; k=rsa; " "p=MIGf\u00a0MA0"\n'  # no-break space, split string
+        '_dmarc TXT "v=DMARC1; p=none; rua=mailto:d@r\u00e4ksm\u00f6rg\u00e5s.se"\n'
+        'note TXT "R\u00e4ksm\u00f6rg\u00e5s"\n'  # free text may be anything
+        'v10 TXT "v=spf10 \u00e5"\n'
+    )
+    warnings = cli.ascii_warnings(base, new)
+    assert [w.split(":")[0] for w in warnings] == ["@ TXT", "_dmarc TXT", "sel._domainkey TXT"]
+    assert "SPF records must be ASCII" in warnings[0] and "A-labels (xn--...)" in warnings[0]
+    assert "DMARC" in warnings[1] and "DKIM" in warnings[2]
+
+
 @pytest.mark.parametrize(
     ("base", "mine", "theirs"),
     [
