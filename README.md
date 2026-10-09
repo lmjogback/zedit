@@ -177,7 +177,9 @@ an address typed backwards. Something that looks like an address but isn't valid
 in a zone for a single address it is the apex.
 
 With `-A` the file also *shows* owners as addresses (IPv6 compressed), ordered by
-address; the apex stays `@`. The update always uses the real reverse names.
+address; the apex stays `@`. The update always uses the real reverse names. In
+the zone `in-addr.arpa.` itself, where `10.2.0.192` is a valid relative name,
+owners are neither read nor shown as addresses.
 
 **Seeing everything.** With `-a` the filtered records are shown in place, as
 comment lines marked `;ro`, each RRSIG right after the type it covers:
