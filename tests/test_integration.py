@@ -493,17 +493,17 @@ def test_bootstrapping_signals(tmp_path, signing):
         assert not dig(port, key, signal, "CDS") and not dig(port, key, signal, "CDNSKEY")
 
 
-def concurrent_soa(key, port, fields):
+def concurrent_soa(key, port, fields, mname="ns1.example.net.", ttl=3600):
     """Shell snippet: the server's SOA changed by someone else while editing.
     It waits until the server answers with the change: with inline-signing the
     signed zone, which answers queries, follows the unsigned one a moment later,
     and zedit can only see the change once it is there (see README, "SOA")."""
     timers = " ".join(fields.split()[1:])  # REFRESH RETRY EXPIRE MINIMUM; the signed serial differs
     return nsupdate(
-        key, port, f"update add example.com. 3600 IN SOA ns1.example.net. hostmaster.example.net. {fields}"
+        key, port, f"update add example.com. {ttl} IN SOA {mname} hostmaster.example.net. {fields}"
     ) + (
         f"for i in $(seq 100); do {TOOLS['dig']} +short -p {port} @127.0.0.1 {ZONE} SOA"
-        f' | grep -q " {timers}$" && break; sleep 0.1; done\n'
+        f' | grep -q "^{mname} .* {timers}$" && break; sleep 0.1; done\n'
     )
 
 
@@ -523,6 +523,21 @@ def test_soa_change_keeps_concurrent_change_to_another_field(server):
     r = run_zedit(port, key, tmp, ed, "y\n")
     assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
     assert soa_fields(port, key) == ["3600", "900", "1209600", "60"]
+
+
+def test_soa_change_keeps_concurrent_change_to_locked_fields(server):
+    """Mine: MINIMUM 300 -> 60. Meanwhile on the server: MNAME ns1 -> ns2 and the
+    SOA TTL 3600 -> 7200. Sending the SOA doesn't put the old MNAME and TTL back."""
+    port, key, tmp = server
+    ed = write_editor(
+        tmp,
+        "sed -i 's/1209600 300/1209600 60/' \"$1\"\n"
+        + concurrent_soa(key, port, "150 7200 900 1209600 300", mname="ns2.example.net.", ttl=7200),
+    )
+    r = run_zedit(port, key, tmp, ed, "y\n")
+    assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+    (rr,) = dig(port, key, ZONE, "SOA")
+    assert rr.split()[1] == "7200" and rr.split()[4] == "ns2.example.net." and rr.split()[-1] == "60"
 
 
 def test_soa_conflict_on_the_same_field_rebases(server):

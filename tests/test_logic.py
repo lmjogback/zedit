@@ -83,11 +83,11 @@ def test_apex_ns_added_before_deleted(old_ns, new_ns, adds, final):
 def test_soa_update_bumps_serial_and_wraps():
     _, old, _ = model("", soa="@ 3600 IN SOA ns1 hm 4294967295 7200 900 1209600 300\n")
     _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 4294967295 7200 900 1209600 60\n")
-    soa, conflicts = cli.soa_to_send(old, new, old[0])
-    (line,) = cli.soa_update(soa, new.ttl, ORIGIN)
+    soa, conflicts = cli.soa_to_send(old, new, old)
+    (line,) = cli.soa_update(soa, ORIGIN)
     assert " 0 7200 900 1209600 60" in line and conflicts == []
     assert cli.soa_to_send(old, old, None) == (None, [])
-    assert cli.soa_update(None, 3600, ORIGIN) == []
+    assert cli.soa_update(None, ORIGIN) == []
 
 
 def test_locked_soa_fields(tmp_path):
@@ -173,8 +173,8 @@ def test_serial_max_rfc1982():
 def test_soa_update_uses_live_serial():
     _, old, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 300\n")
     _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 60\n")
-    soa, _ = cli.soa_to_send(old, new, old[0].replace(serial=117))
-    assert soa.serial == 118
+    soa, _ = cli.soa_to_send(old, new, soa_rd("117 7200 900 1209600 300"))
+    assert soa[0].serial == 118
 
 
 def soa_rd(fields):
@@ -186,14 +186,28 @@ def test_soa_keeps_concurrent_changes_to_other_fields():
     """Mine: MINIMUM 300 -> 60; on the server meanwhile: REFRESH 7200 -> 3600.
     Both survive, instead of mine overwriting the server's REFRESH."""
     base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
-    live = soa_rd("105 3600 900 1209600 300")[0]
+    live = soa_rd("105 3600 900 1209600 300")
     soa, conflicts = cli.soa_to_send(base, mine, live)
-    assert (soa.serial, soa.refresh, soa.minimum, conflicts) == (106, 3600, 60, [])
+    assert (soa[0].serial, soa[0].refresh, soa[0].minimum, conflicts) == (106, 3600, 60, [])
+
+
+def test_soa_keeps_concurrent_changes_to_locked_fields():
+    """Mine: MINIMUM 300 -> 60; on the server meanwhile: MNAME ns1 -> ns2 and the
+    SOA TTL 3600 -> 7200. The SOA sent has the server's MNAME and TTL, not the
+    transferred ones."""
+    base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
+    _, live, _ = model("", soa="@ 7200 IN SOA ns2 hm 105 7200 900 1209600 300\n")
+    soa, conflicts = cli.soa_to_send(base, mine, live)
+    assert (str(soa[0].mname), soa.ttl, soa[0].minimum, conflicts) == ("ns2", 7200, 60, [])
+    (line,) = cli.soa_update(soa, ORIGIN)
+    assert line == (
+        "update add example.com. 7200 IN SOA ns2.example.com. hm.example.com. 106 7200 900 1209600 60"
+    )
 
 
 def test_soa_conflict_on_the_same_field():
     base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
-    live = soa_rd("105 7200 900 1209600 120")[0]
+    live = soa_rd("105 7200 900 1209600 120")
     _, conflicts = cli.soa_to_send(base, mine, live)
     assert conflicts == ["MINIMUM"]
 
@@ -926,6 +940,7 @@ def test_live_soa_names_are_relative_like_the_transfer(monkeypatch):
     ctx = cli.SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53, keyring=None, keyname=None)
     live = cli.live_soa(ctx)
     _, base, _ = model("", soa="@ 3600 IN SOA ns1 hostmaster 100 7200 900 1209600 300\n")
-    assert (live.mname, live.rname, live.serial) == (base[0].mname, base[0].rname, 105)
+    assert (live[0].mname, live[0].rname, live[0].serial) == (base[0].mname, base[0].rname, 105)
+    assert live.ttl == 3600
     answer = answer.replace("hostmaster.example.com.", "hostmaster.example.net.")
-    assert cli.live_soa(ctx).rname.to_text() == "hostmaster.example.net."
+    assert cli.live_soa(ctx)[0].rname.to_text() == "hostmaster.example.net."

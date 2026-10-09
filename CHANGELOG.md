@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fix: changing the SOA put back the MNAME and SOA TTL from the transfer, so a
+  change to either made on the server while you were editing was reverted, and
+  the update was still reported as verified. They are now taken from the
+  server's current SOA, and verification checks the MNAME too.
+
 ## 1.2.2 - 2026-10-07
 
 - Fix: in a zone whose SOA RNAME is inside the zone (say
