@@ -228,6 +228,12 @@ server then ignores zedit's SOA, because the unsigned zone's serial has already
 moved past it, and zedit reports the update as not verified (exit status 3);
 resume to try again.
 
+**Serial numbers.** An edit that doesn't change the SOA doesn't send it: the
+server bumps the serial by its own rules, with BIND those of
+`serial-update-method`. Sign a dynamic zone in place, with `dnssec-policy` and
+`inline-signing no`: with inline-signing, `serial-update-method` doesn't apply
+to the serials updates produce.
+
 **Semantic diff.** Both sides are parsed and re-rendered canonically before
 diffing, so whitespace, alignment, comments, ordering and equivalent rdata
 spellings (`www` vs `www.example.com.`) don't show up as changes. Nor does a

@@ -332,7 +332,13 @@ def serial_greater(new, old):
 @pytest.mark.parametrize("method", ["increment", "unixtime", "date"])
 def test_serial_update_methods(tmp_path, method, signing):
     """Record and SOA edits work regardless of serial-update-method: record edits
-    leave the serial to BIND, SOA edits carry max(transferred, live) + 1."""
+    leave the serial to BIND, SOA edits carry max(transferred, live) + 1.
+
+    With inline-signing, the unixtime/date checks below pass only because the
+    zone is loaded, and its signed serial set by the method, during the test:
+    BIND applies the method to the signed zone's own serial changes, not to the
+    ones updates bring in from the unsigned zone (see README, "Serial numbers").
+    An update on a later day would get the previous serial plus one."""
     with run_named(tmp_path, signing, method) as (port, key, tmp):
         s0, _ = soa(port, key)
 
