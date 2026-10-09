@@ -34,6 +34,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from types import SimpleNamespace
 
@@ -644,13 +645,29 @@ def shown(ctx, hidden):
     return {k: v for k, v in hidden.items() if not (ctx.no_rrsig and k[1] in NOISY)}
 
 
+def write_tmp(path, text):
+    """Write text to a new file next to path and fsync it; -> its name. The file
+    is created exclusively (a symlink planted under its name isn't followed),
+    readable only by the user, since sessions hold zone data."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=os.path.basename(path) + ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        os.unlink(tmp)
+        raise
+    return tmp
+
+
 def write_atomic(path, text):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    tmp = write_tmp(path, text)
+    try:
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 # ---------------------------------------------------------------- three-way merge

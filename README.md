@@ -269,7 +269,7 @@ same second as another one for the zone gets `ZONE-TIMESTAMP-2.zone`, and so on.
 Both are removed after a successful, verified update. On abort or failure,
 including answering no to `Send?`, zedit prints a `--resume` command. So does
 `--dry-run`: resume without `--dry-run` to send the same edit, rebased onto the
-zone as it is then. The directory is created accessible only to you; zedit warns,
+zone as it is then. The files are readable only by you, and the directory is created accessible only to you; zedit warns,
 but changes nothing, if its permissions have since been opened to others.
 
 **Exit status.** 0 success (or nothing to do), 1 error or aborted edit,

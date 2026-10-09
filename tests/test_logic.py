@@ -997,3 +997,13 @@ def test_case_only_changes_are_put_back():
     assert str(new_soa[0].rname) == "hostmaster" and not cli.soa_changed(base_soa, new_soa)
     unchanged, _, none = cli.keep_base_case(base, base_soa, base, base_soa)
     assert none == [] and unchanged == base
+
+
+def test_write_atomic_is_private_and_ignores_planted_symlinks(tmp_path):
+    path = tmp_path / "s.zone"
+    target = tmp_path / "elsewhere"
+    (tmp_path / "s.zone.tmp").symlink_to(target)  # the name the old code wrote to
+    cli.write_atomic(str(path), "x\n")
+    assert path.read_text() == "x\n" and oct(path.stat().st_mode & 0o777) == "0o600"
+    assert not target.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["s.zone", "s.zone.tmp"]

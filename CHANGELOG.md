@@ -17,6 +17,11 @@
   shown and sent.
 - Fix: `$GENERATE` substituted `$` inside a comment at the end of the line too,
   so `; see ${docs}` failed with "bad $GENERATE modifier".
+- Fix: saved session files lost their owner-only permissions on the first
+  write (they got the umask's, usually 0644), and the write went through a
+  fixed `FILE.tmp` name, following a symlink planted there (relevant when
+  `--resume FILE` is in a shared directory). They are now written through a
+  new, exclusively created file readable only by you.
 
 ## 1.2.2 - 2026-10-07
 
