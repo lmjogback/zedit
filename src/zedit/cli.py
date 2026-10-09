@@ -297,6 +297,12 @@ def is_reverse(origin):
     return origin.is_subdomain(IN_ADDR) or origin.is_subdomain(IP6_ARPA)
 
 
+def address_owners(origin):
+    """Whether owners in this zone may be written (and shown with -A) as IP
+    addresses. Not in in-addr.arpa itself, where four labels are a valid name."""
+    return is_reverse(origin) and origin != IN_ADDR
+
+
 def classless_range(origin):
     """For an RFC 2317 zone such as 16/28.2.0.192.in-addr.arpa (or 16-31.2...),
     the range of last octets it holds, else None."""
@@ -351,11 +357,11 @@ def owner_to_name(token, origin):
     name (text). None if the token isn't an address. Raises ValueError for tokens
     that look like an address but aren't valid (e.g. 192.0.2.010), which would
     otherwise silently become a strange relative name."""
-    if not is_reverse(origin):
+    if not address_owners(origin):
         return None
-    if origin == IN_ADDR or (origin.is_subdomain(IP6_ARPA) and NIBBLES.match(token)):
-        # In in-addr.arpa itself four labels are a valid name, and in ip6.arpa a
-        # token like 0.5.0.0 is a nibble name (e.g. a /64 under a /48), not an address.
+    if origin.is_subdomain(IP6_ARPA) and NIBBLES.match(token):
+        # In ip6.arpa a token like 0.5.0.0 is a nibble name (e.g. a /64 under a
+        # /48), not an address.
         return None
     if token.endswith(".") or not (LOOKS_LIKE_IPV4.match(token) or ":" in token):
         return None
@@ -396,7 +402,7 @@ def scan_line(line):
 def rewrite_address_owners(text, origin):
     """In a reverse zone, replace owner names written as IP addresses with their
     arpa names. Line count is preserved, so error line numbers stay valid."""
-    if not is_reverse(origin):
+    if not address_owners(origin):
         return text
     out, depth = [], 0
     for n, line in enumerate(text.split("\n"), 1):
@@ -575,7 +581,7 @@ def display_key(k):
 def owner_text(name, origin, addresses):
     """The owner as written in the file: the relative name, or with --addresses
     in a reverse zone the IP address (the apex stays '@')."""
-    if addresses and name != dns.name.empty:
+    if addresses and address_owners(origin) and name != dns.name.empty:
         address = name_to_address(name, origin)
         if address:
             return address
@@ -584,7 +590,7 @@ def owner_text(name, origin, addresses):
 
 def sort_key(origin, addresses):
     """display_key, but with --addresses records are ordered by address."""
-    if not addresses:
+    if not (addresses and address_owners(origin)):
         return display_key
 
     def key(k):
@@ -698,7 +704,7 @@ def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=Non
         "; Records without a TTL get $TTL below (= SOA MINIMUM at transfer time).",
         *(
             ["; Owners may be written as IP addresses; they are converted to reverse names."]
-            if is_reverse(origin)
+            if address_owners(origin)
             else []
         ),
         *extra,

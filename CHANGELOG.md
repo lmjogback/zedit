@@ -57,6 +57,10 @@
   unescaped into the "contact:" comment, so the rest of the label became a line
   of zone data, and zedit offered to add a record nobody wrote. Characters that
   aren't printable are now shown there as `\DDD`.
+- Fix: in the zone `in-addr.arpa.` itself, `-A` showed `10.2.0.192` as
+  `192.0.2.10`, which is read back as a name, so saving the file unchanged moved
+  every PTR record. `-A` now leaves that zone's owners as they are, as input
+  already did. Ordinary reverse zones are not affected.
 
 ## 1.2.2 - 2026-10-07
 

@@ -547,6 +547,22 @@ def test_no_rewriting_in_in_addr_arpa_itself():
     assert cli.owner_to_name("10.2.0.192", origin) is None
 
 
+def test_no_addresses_shown_in_in_addr_arpa_itself():
+    # Shown as 192.0.2.10, the owner would be read back as the relative name
+    # 192.0.2.10.in-addr.arpa., so an unchanged file would move the PTR.
+    origin = dns.name.from_text("in-addr.arpa.")
+    z = dns.zone.from_text(
+        "$TTL 300\n" + SOA + "@ NS ns1.example.net.\n10.2.0.192 PTR b.example.com.\n",
+        origin=origin,
+        relativize=True,
+    )
+    m, soa, _ = cli.to_model(z)
+    text = cli.render_file(soa, m, origin, "x", addresses=True)
+    assert "192.0.2.10 " not in text and "converted to reverse names" not in text
+    m2, _ = cli.parse_text(text, origin)
+    assert set(m2) == set(m)
+
+
 def test_continuation_lines_are_not_owners():
     m, _ = cli.parse_text("$TTL 300\n" + SOA + '10 TXT ( "first"\n192.0.2.99 )\n', REV)
     ((key, rds),) = m.items()
