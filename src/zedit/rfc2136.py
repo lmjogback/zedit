@@ -36,8 +36,11 @@ KEY_STATEMENT = re.compile(r'key\s+"?([^"\s{]+)"?\s*\{(.*?)\}\s*;', re.S)
 
 def load_bind_key(path: str) -> tuple[Keyring, dns.name.Name]:
     """Read a key in tsig-keygen / named.conf format."""
-    with open(path) as f:
-        text = f.read()
+    try:
+        with open(path) as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        raise ZeditError(f"cannot read key file {path}: {e}") from e
     keys = KEY_STATEMENT.findall(text)
     if not keys:
         raise ZeditError(f"no key statement found in {path}")
@@ -51,8 +54,18 @@ def load_bind_key(path: str) -> tuple[Keyring, dns.name.Name]:
     sec = re.search(r'secret\s+"([^"]+)"\s*;', body)
     if not (alg and sec):
         raise ZeditError(f"algorithm/secret missing in {path}")
-    kr = dns.tsigkeyring.from_text({name: (alg.group(1), sec.group(1))})
-    return kr, dns.name.from_text(name)
+    try:
+        kr = dns.tsigkeyring.from_text({name: (alg.group(1), sec.group(1))})
+        keyname = dns.name.from_text(name)
+        # dnspython checks the algorithm only when it signs
+        q = dns.message.make_query(keyname, dns.rdatatype.SOA)
+        q.use_tsig(kr, keyname=keyname)
+        q.to_wire()
+    except KeyError:
+        raise ZeditError(f"invalid key in {path}: unknown algorithm {alg.group(1)}") from None
+    except (ValueError, dns.exception.DNSException) as e:  # ValueError: e.g. a secret that isn't base64
+        raise ZeditError(f"invalid key in {path}: {e}") from e
+    return kr, keyname
 
 
 @dataclass(frozen=True)

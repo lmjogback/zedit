@@ -1,3 +1,4 @@
+import pytest
 from helpers import ORIGIN
 
 from zedit import cli
@@ -17,3 +18,14 @@ def test_find_keyfile_order(tmp_path, monkeypatch):
     assert cli.find_keyfile(ORIGIN) == str(zone)
     monkeypatch.setenv("ZEDIT_KEYFILE", "/elsewhere.key")
     assert cli.find_keyfile(ORIGIN) == "/elsewhere.key"
+
+
+@pytest.mark.parametrize("value", ["0", "65536", "-1", "x"])
+def test_port_out_of_range_is_a_usage_error(value, capsys):
+    with pytest.raises(SystemExit) as e:
+        cli.make_parser().parse_args(["-p", value, "example.com"])
+    assert e.value.code == 2 and "is not a port number (1-65535)" in capsys.readouterr().err
+
+
+def test_port_in_range():
+    assert cli.make_parser().parse_args(["-p", "65535", "example.com"]).port == 65535
