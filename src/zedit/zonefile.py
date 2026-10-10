@@ -244,7 +244,7 @@ def parse_text(text, origin):
 def check_cname(m):
     """BIND *silently* ignores adds that violate the CNAME rule (RFC 2136 §3.4.2.2),
     so this must be caught here rather than relying on the server."""
-    types = {}
+    types: dict[dns.name.Name, set[int]] = {}
     for n, t in m:
         types.setdefault(n, set()).add(t)
     bad = sorted(

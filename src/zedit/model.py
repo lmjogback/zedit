@@ -2,7 +2,7 @@
 
 import sys
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import NamedTuple, NoReturn
 
 import dns.name
 import dns.rdataset
@@ -78,7 +78,7 @@ def tname(t):
     return dns.rdatatype.to_text(t)
 
 
-def die(msg, code=1):
+def die(msg, code=1) -> NoReturn:
     print(f"zedit: {msg}", file=sys.stderr)
     sys.exit(code)
 

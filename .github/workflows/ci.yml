@@ -51,6 +51,7 @@ jobs:
           cache-suffix: ${{ github.job }}
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run mypy
 
   lowest:
     # The oldest dependency versions pyproject.toml allows (dnspython 2.4), which
