@@ -14,7 +14,7 @@ import time
 import dns.exception
 
 from zedit import changes, merge, rfc2136, zonefile
-from zedit.model import SOA_EDITABLE, ZeditError, same, sortkey, tname
+from zedit.model import SOA_EDITABLE, SOA_KEY, ZeditError, same, sortkey, tname
 
 
 def write_tmp(path, text):
@@ -55,7 +55,7 @@ def rebase(ctx, base, base_soa, mine, mine_soa):
     merged, notes, dropped, conflicts = merge.merge3(base, mine, theirs)
     msoa, snote, sconf = merge.merge_soa(base_soa, mine_soa, theirs_soa)
     if snote:
-        notes["SOA"] = snote
+        notes[SOA_KEY] = snote
     conflicts += sconf
     extra = [f"; Rebased: serial {base_soa[0].serial} -> {theirs_soa[0].serial}."]
     extra += [f"; Removed by merge (empty RRset): {d}" for d in dropped]
@@ -116,7 +116,7 @@ def verify(ctx, base, new, soa=None, attempts=10):
         else:
             serial = after_soa[0].serial
             bad = [
-                f"{k[0]} {tname(k[1])}"
+                f"{k.name} {tname(k.rdtype)}"
                 for k in sorted(changed, key=sortkey)
                 if not same(after.get(k), new.get(k))
             ]
@@ -335,7 +335,7 @@ def session(ctx, args):
         if recased:
             print(
                 "Letter case in DNS names is not significant, so case-only changes are not sent: "
-                + ", ".join(f"{k[0]} {tname(k[1])}" for k in recased)
+                + ", ".join(f"{k.name} {tname(k.rdtype)}" for k in recased)
             )
         old_lines = [zonefile.soa_line(base_soa, ctx.origin)] + zonefile.rr_lines(
             base, ctx.origin, addresses=ctx.addresses

@@ -4,7 +4,7 @@ import dns.name
 import dns.rdataset
 import dns.rdatatype
 
-from zedit.model import SOA, SOA_EDITABLE, same, tname
+from zedit.model import SOA_EDITABLE, SOA_KEY, same, tname
 
 
 def merge_scalar(b, m, t):
@@ -42,18 +42,18 @@ def merge3(base, mine, theirs):
                     note.append(
                         f"; CONFLICT TTL: base={b.ttl if b else '-'} server={t.ttl} mine={m.ttl} - mine kept"
                     )
-            if len(rd) > 1 and dns.rdatatype.is_singleton(k[1]):
+            if len(rd) > 1 and dns.rdatatype.is_singleton(k.rdtype):
                 # CNAME, DNAME etc. hold a single record, so two values can't be
                 # merged as a union (dnspython would keep one, in hash order)
                 conflicts += 1
                 note.append(
-                    f"; CONFLICT {tname(k[1])}: base={b[0].to_text() if b else '-'} "
+                    f"; CONFLICT {tname(k.rdtype)}: base={b[0].to_text() if b else '-'} "
                     f"server={t[0].to_text()} mine={m[0].to_text()} - mine kept"
                 )
                 rd = set(m)
             r = dns.rdataset.from_rdata_list(ttl, list(rd)) if rd else None
             if r is None:
-                dropped.append(f"{k[0]} {tname(k[1])}")
+                dropped.append(f"{k.name} {tname(k.rdtype)}")
             else:
                 notes[k] = note
         if r is not None:
@@ -85,7 +85,7 @@ def keep_base_case(base, base_soa, new, new_soa):
         old = {r: r for r in base[bk]} if bk in base else {}
         rds_out = [old.get(r, r) for r in rds]
         texts = [r.to_text() for r in rds]
-        if bk[0].to_text() != k[0].to_text() or texts != [r.to_text() for r in rds_out]:
+        if bk.name.to_text() != k.name.to_text() or texts != [r.to_text() for r in rds_out]:
             reverted.append(bk)
             rds = dns.rdataset.from_rdata_list(rds.ttl, rds_out)
         out[bk] = rds
@@ -93,6 +93,6 @@ def keep_base_case(base, base_soa, new, new_soa):
     names = {f: getattr(o, f) for f in ("mname", "rname") if getattr(o, f) == getattr(n, f)}
     soa_rd = n.replace(**names)
     if soa_rd.to_text() != n.to_text():
-        reverted.insert(0, (dns.name.empty, SOA))
+        reverted.insert(0, SOA_KEY)
         new_soa = dns.rdataset.from_rdata(new_soa.ttl, soa_rd)
     return out, new_soa, reverted

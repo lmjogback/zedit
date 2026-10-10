@@ -19,7 +19,7 @@ import dns.update
 import dns.zone
 
 from zedit import changes, zonefile
-from zedit.model import NS, SOA, ZeditError, die, same, sortkey, tname
+from zedit.model import APEX_NS, SOA, ZeditError, die, same, sortkey, tname
 
 KEY_STATEMENT = re.compile(r'key\s+"?([^"\s{]+)"?\s*\{(.*?)\}\s*;', re.S)
 
@@ -83,8 +83,8 @@ def compute_update(old, new, origin):
     dels, adds, final = [], [], []
     for key in sorted(set(old) | set(new), key=sortkey):
         o, n = old.get(key), new.get(key)
-        name, t = key[0].derelativize(origin), key[1]
-        if key == (dns.name.empty, NS) and o is not None and n is not None:
+        name, t = key.name.derelativize(origin), key.rdtype
+        if key == APEX_NS and o is not None and n is not None:
             if changed := tuple(n) if o.ttl != n.ttl else tuple(r for r in n if r not in o):
                 adds.append(Op("add", name, t, n.ttl, changed))
             if gone := tuple(r for r in o if r not in n):
@@ -114,7 +114,7 @@ def compute_prereqs(old, new, origin):
         o, n = old.get(key), new.get(key)
         if same(o, n):
             continue
-        name, t = key[0].derelativize(origin), key[1]
+        name, t = key.name.derelativize(origin), key.rdtype
         out.append(Op("absent", name, t) if o is None else Op("present", name, t, rdatas=tuple(o)))
     return out
 

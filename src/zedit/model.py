@@ -1,8 +1,10 @@
 """Types, constants and helpers shared by the other modules."""
 
 import sys
+from typing import NamedTuple
 
 import dns.name
+import dns.rdataset
 import dns.rdatatype
 
 SOA = int(dns.rdatatype.SOA)
@@ -29,6 +31,28 @@ class ZeditError(Exception):
     pass
 
 
+class RRKey(NamedTuple):
+    """An RRset in the model: owner name relative to the zone, and type."""
+
+    name: dns.name.Name
+    rdtype: int
+
+
+class HiddenKey(NamedTuple):
+    """A read-only RRset (DNSSEC, server-maintained): like RRKey, with the type
+    an RRSIG set covers, since there is one RRSIG set per type."""
+
+    name: dns.name.Name
+    rdtype: int
+    covers: int
+
+
+Records = dict[RRKey, dns.rdataset.Rdataset]
+Hidden = dict[HiddenKey, dns.rdataset.Rdataset]
+SOA_KEY = RRKey(dns.name.empty, SOA)
+APEX_NS = RRKey(dns.name.empty, NS)
+
+
 def tname(t):
     return dns.rdatatype.to_text(t)
 
@@ -39,14 +63,14 @@ def die(msg, code=1):
 
 
 def sortkey(k):
-    return (k[0], k[1])  # dns.name gives canonical DNS order, apex first
+    return (k.name, k.rdtype)  # dns.name gives canonical DNS order, apex first
 
 
 def display_key(k):
     """Owner name, then type; an RRSIG set sorts right after the type it covers."""
-    name, t = k[0], k[1]
+    name, t = k.name, k.rdtype
     if t == RRSIG:
-        return (name, k[2], 1)
+        return (name, k.covers, 1)
     return (name, t, 0)
 
 
