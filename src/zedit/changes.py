@@ -14,11 +14,11 @@ def signal_warnings(base, new):
     an RFC 9615 signal belongs (e.g. a typo such as _dsbot). Only a warning: zedit
     doesn't check signals against the child zone or its delegation."""
     return [
-        f"{k[0]} {tname(k[1])} is not at a _dsboot name; RFC 9615 signals are named "
+        f"{k.name} {tname(k.rdtype)} is not at a _dsboot name; RFC 9615 signals are named "
         "_dsboot.CHILD._signal.NS-HOST"
         for k in sorted(new, key=sortkey)
-        if k[1] in FILTERED_AT_APEX
-        and k[0].labels[0].lower() != SIGNAL_LABEL
+        if k.rdtype in FILTERED_AT_APEX
+        and k.name.labels[0].lower() != SIGNAL_LABEL
         and not same(base.get(k), new[k])
     ]
 
@@ -47,14 +47,14 @@ def ascii_warnings(base, new):
     Unicode instead of as an A-label. Shown as \\DDD escapes, but easy to miss."""
     out = []
     for k in sorted(new, key=sortkey):
-        if k[1] != TXT:
+        if k.rdtype != TXT:
             continue
         old = base.get(k) or ()
         for rd in sorted(new[k], key=lambda r: r.to_text()):
-            kind = ascii_kind(k[0], rd)
+            kind = ascii_kind(k.name, rd)
             if kind and rd not in old and any(b < 0x20 or b > 0x7E for s in rd.strings for b in s):
                 out.append(
-                    f"{k[0]} TXT: {kind} records must be ASCII, and this one isn't; "
+                    f"{k.name} TXT: {kind} records must be ASCII, and this one isn't; "
                     "domain names in it must be A-labels (xn--...)"
                 )
     return out

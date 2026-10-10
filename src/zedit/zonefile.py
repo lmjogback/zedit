@@ -13,14 +13,17 @@ import dns.zonefile
 
 from zedit import reverse
 from zedit.model import (
+    APEX_NS,
     CNAME,
     FILTERED,
     FILTERED_AT_APEX,
     IDNA,
     LOCKED_SOA,
     NOISY,
-    NS,
     SOA,
+    SOA_KEY,
+    HiddenKey,
+    RRKey,
     display_key,
     tname,
 )
@@ -33,18 +36,17 @@ def is_filtered(name, t):
 def to_model(zone):
     """-> (model, apex SOA, rejected).
 
-    model:    {(relative name, rdtype): Rdataset} without SOA and filtered types
-    rejected: {(relative name, rdtype, covers): Rdataset} for filtered types and
-              any SOA outside the apex (keyed with covers: one RRSIG set per type)"""
+    model:    Records, without SOA and filtered types
+    rejected: Hidden, the filtered types and any SOA outside the apex"""
     m, rejected, soa = {}, {}, None
     for name, rds in zone.iterate_rdatasets():
         t = int(rds.rdtype)
         if t == SOA and name == dns.name.empty:
             soa = rds
         elif t == SOA or is_filtered(name, t):
-            rejected[(name, t, int(rds.covers))] = rds
+            rejected[HiddenKey(name, t, int(rds.covers))] = rds
         else:
-            m[(name, t)] = rds
+            m[RRKey(name, t)] = rds
     return m, soa, rejected
 
 
@@ -231,7 +233,7 @@ def parse_text(text, origin):
         raise ValueError(f"names outside the zone {origin} (check $ORIGIN): {', '.join(outside)}")
     m, soa, rejected = to_model(z)
     if rejected:
-        bad = ", ".join(sorted({f"{k[0]} {tname(k[1])}" for k in rejected}))
+        bad = ", ".join(sorted({f"{k.name} {tname(k.rdtype)}" for k in rejected}))
         raise ValueError(f"records not allowed (DNSSEC, CDS/CDNSKEY at the apex, or SOA outside it): {bad}")
     if soa is None:
         raise ValueError("SOA missing - it may be edited but not removed")
@@ -274,7 +276,7 @@ def parse_file(path, origin, base_soa):
     if locked:
         raise ValueError(f"locked SOA fields changed: {', '.join(locked)}")
     check_cname(m)
-    if (dns.name.empty, NS) not in m:
+    if APEX_NS not in m:
         # The server would ignore deleting the last one (RFC 2136 §3.4.2.4)
         raise ValueError("the zone apex needs at least one NS record")
     return m, soa
@@ -314,7 +316,7 @@ def rr_lines(m, origin, pad=0, notes=None, hidden=None, addresses=False):
     hidden = hidden or {}
     for key in sorted([*m, *hidden], key=sort_key(origin, addresses)):
         ro = key in hidden
-        name, t = key[0], key[1]
+        name, t = key.name, key.rdtype
         rds = hidden[key] if ro else m[key]
         if notes and key in notes:
             out += notes[key]
@@ -386,7 +388,7 @@ def soa_line(rds, origin, pad=0):
 
 def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=None, addresses=False):
     notes = notes or {}
-    pad = max([len(owner_text(k[0], origin, addresses)) for k in [*model, *(hidden or {})]] + [1])
+    pad = max([len(owner_text(k.name, origin, addresses)) for k in [*model, *(hidden or {})]] + [1])
     if hidden is None:
         filtered = [
             "; Filtered out: "
@@ -413,7 +415,7 @@ def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=Non
         f"$ORIGIN {origin}",
         f"$TTL {soa_rds[0].minimum}",
         "",
-        *notes.get("SOA", []),
+        *notes.get(SOA_KEY, []),
         soa_line(soa_rds, origin, pad),
         *soa_help(soa_rds, origin),
         "",
@@ -425,4 +427,4 @@ def shown(ctx, hidden):
     """The read-only records to display, per --show-all / --no-rrsig, or None."""
     if not ctx.show_all:
         return None
-    return {k: v for k, v in hidden.items() if not (ctx.no_rrsig and k[1] in NOISY)}
+    return {k: v for k, v in hidden.items() if not (ctx.no_rrsig and k.rdtype in NOISY)}
