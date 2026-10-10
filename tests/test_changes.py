@@ -1,5 +1,5 @@
 import pytest
-from helpers import CDNSKEY_RDATA, CDS_RDATA, ORIGIN, lines, model, soa_rd
+from helpers import CDNSKEY_RDATA, CDS_RDATA, ORIGIN, changeset, lines, model, soa_rd
 
 from zedit import changes, rfc2136, zonefile
 from zedit.model import ZeditError
@@ -96,10 +96,10 @@ def test_change_count_counts_records_as_the_diff_shows_them():
         "tens 60 A 127.0.0.10\ntens 60 A 127.0.0.11\ntens 60 A 127.0.0.12\n"
     )
     # deleted: mx, ttl x2 (new TTL), twenties x3; added: www, mx, ttl x2, tens x3
-    assert changes.change_count(old, new) == (6, 7)
-    assert changes.change_count(old, old) == (0, 0)
+    assert changes.change_count(changeset(old, new)) == (6, 7)
+    assert changes.change_count(changeset(old, old)) == (0, 0)
     old_lines, new_lines = zonefile.rr_lines(old, ORIGIN), zonefile.rr_lines(new, ORIGIN)
-    assert changes.change_count(old, new) == (
+    assert changes.change_count(changeset(old, new)) == (
         len(set(old_lines) - set(new_lines)),
         len(set(new_lines) - set(old_lines)),
     )

@@ -14,7 +14,7 @@ import time
 import dns.exception
 
 from zedit import changes, merge, rfc2136, zonefile
-from zedit.model import SOA_EDITABLE, SOA_KEY, ZeditError, same, sortkey, tname
+from zedit.model import SOA_EDITABLE, SOA_KEY, ZeditError, same, tname
 
 
 def write_tmp(path, text):
@@ -91,17 +91,15 @@ def soa_conflict_message(conflicts):
     )
 
 
-def verify(ctx, base, new, soa=None, attempts=10):
-    """Re-transfer the zone and check that every RRset we changed now matches
-    the edit, and the SOA's MNAME and editable fields the SOA RRset sent (soa;
+def verify(ctx, edit, soa=None, attempts=10):
+    """Re-transfer the zone and check that every RRset the ChangeSet edit changes
+    now matches it, and the SOA's MNAME and editable fields the SOA RRset sent (soa;
     None if the SOA wasn't sent). BIND silently drops some updates (CNAME rule, SOA with a
     non-greater serial, TTLs above a dnssec-policy max-zone-ttl), and with
     inline-signing the signed zone is updated asynchronously, hence the retries.
     A retry transfers the zone again only if its serial has moved since the last
     transfer, so a lasting mismatch in a large zone costs SOA queries, not AXFRs.
     -> list of RRsets that don't match (empty on success)."""
-    base, new = base.records, new.records
-    changed = [k for k in set(base) | set(new) if not same(base.get(k), new.get(k))]
     bad, serial = [], None
     for i in range(attempts):
         if i:
@@ -118,9 +116,9 @@ def verify(ctx, base, new, soa=None, attempts=10):
         else:
             serial = after.soa[0].serial
             bad = [
-                f"{k.name} {tname(k.rdtype)}"
-                for k in sorted(changed, key=sortkey)
-                if not same(after.records.get(k), new.get(k))
+                f"{c.key.name} {tname(c.key.rdtype)}"
+                for c in edit.rrsets
+                if not same(after.records.get(c.key), c.new)
             ]
             if soa is not None:
                 bad += [
@@ -348,14 +346,12 @@ def session(ctx, args):
             cleanup(ctx)
             return 0
 
-        dels, adds, final = rfc2136.compute_update(base.records, new.records, ctx.origin)
-        n_dels, n_adds = changes.change_count(base.records, new.records)
-        prereqs = rfc2136.compute_prereqs(base.records, new.records, ctx.origin)
-        with_soa = changes.soa_changed(base.soa, new.soa)
-        plan = (base.soa, new.soa, prereqs, dels, adds, final)
+        edit = changes.change_set(base, new)
+        n_dels, n_adds = changes.change_count(edit)
 
         show_diff(old_lines, new_lines, f"{ctx.origin} (serial {base.soa[0].serial})", "edited")
-        print(f"\n{n_dels} delete, {n_adds} add{', SOA changed' if with_soa else ''} in 1 atomic UPDATE.")
+        soa_note = ", SOA changed" if edit.soa_changed else ""
+        print(f"\n{n_dels} delete, {n_adds} add{soa_note} in 1 atomic UPDATE.")
         warnings = changes.signal_warnings(base.records, new.records)
         warnings += changes.ascii_warnings(base.records, new.records)
         for w in warnings:
@@ -365,7 +361,7 @@ def session(ctx, args):
             a = ask("Send? [y]es / [N]o / [e]dit / [s]cript: ", {"y", "n", "e", "s"})
             if a != "s":
                 break
-            script, _, conflicts = rfc2136.make_script(ctx, *plan)
+            script, _, conflicts = rfc2136.make_script(ctx, edit)
             print(script)
             if conflicts:
                 print(f"Warning: {soa_conflict_message(conflicts)} Sending would offer a rebase.")
@@ -375,7 +371,7 @@ def session(ctx, args):
             print("Nothing sent.")
             return 2
         if args.dry_run:
-            script, _, conflicts = rfc2136.make_script(ctx, *plan)
+            script, _, conflicts = rfc2136.make_script(ctx, edit)
             print(script)
             if conflicts:
                 print(f"Warning: {soa_conflict_message(conflicts)} Sending would offer a rebase.")
@@ -383,7 +379,7 @@ def session(ctx, args):
             hint(ctx, args, dry_run=True)
             return 0
 
-        ops, sent_soa, conflicts = rfc2136.update_ops(ctx, *plan)
+        ops, sent_soa, conflicts = rfc2136.update_ops(ctx, edit)
         if conflicts:
             ok, out, can_rebase = False, soa_conflict_message(conflicts), True
         else:
@@ -391,7 +387,7 @@ def session(ctx, args):
         if ok:
             if out:
                 print(out)
-            missing = verify(ctx, base, new, sent_soa)
+            missing = verify(ctx, edit, sent_soa)
             if missing:
                 print(
                     "Update accepted, but could not be verified:\n  "

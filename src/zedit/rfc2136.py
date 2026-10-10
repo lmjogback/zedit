@@ -19,7 +19,7 @@ import dns.update
 import dns.zone
 
 from zedit import changes, zonefile
-from zedit.model import APEX_NS, SOA, ZeditError, Zone, die, same, sortkey, tname
+from zedit.model import APEX_NS, SOA, ZeditError, Zone, die, tname
 
 KEY_STATEMENT = re.compile(r'key\s+"?([^"\s{]+)"?\s*\{(.*?)\}\s*;', re.S)
 
@@ -73,7 +73,7 @@ class Op(NamedTuple):
     rdatas: tuple = ()
 
 
-def compute_update(old, new, origin):
+def compute_update(edit, origin):
     """-> (deletes, adds, final deletes): only the records that change. Deletes go
     before adds (handles e.g. A -> CNAME), except at the apex NS RRset: RFC 2136
     §3.4.2.4 has the server ignore deleting the apex NS RRset or its last record,
@@ -81,8 +81,8 @@ def compute_update(old, new, origin):
     ("final deletes"), record by record. Elsewhere a TTL change replaces the
     whole RRset, since the TTL applies to all of it."""
     dels, adds, final = [], [], []
-    for key in sorted(set(old) | set(new), key=sortkey):
-        o, n = old.get(key), new.get(key)
+    for c in edit.rrsets:
+        key, o, n = c.key, c.old, c.new
         name, t = key.name.derelativize(origin), key.rdtype
         if key == APEX_NS and o is not None and n is not None:
             if changed := tuple(n) if o.ttl != n.ttl else tuple(r for r in n if r not in o):
@@ -104,18 +104,15 @@ def compute_update(old, new, origin):
     return dels, adds, final
 
 
-def compute_prereqs(old, new, origin):
+def compute_prereqs(edit, origin):
     """Optimistic lock on exactly the RRsets this update touches (RFC 2136 §2.4):
     value-dependent "RRset exists" with the base content for RRsets that are
     changed or deleted, "RRset does not exist" for RRsets that are created.
     Concurrent changes to other names (e.g. DHCP/DDNS) don't conflict."""
     out = []
-    for key in sorted(set(old) | set(new), key=sortkey):
-        o, n = old.get(key), new.get(key)
-        if same(o, n):
-            continue
-        name, t = key.name.derelativize(origin), key.rdtype
-        out.append(Op("absent", name, t) if o is None else Op("present", name, t, rdatas=tuple(o)))
+    for c in edit.rrsets:
+        name, t = c.key.name.derelativize(origin), c.key.rdtype
+        out.append(Op("absent", name, t) if c.old is None else Op("present", name, t, rdatas=tuple(c.old)))
     return out
 
 
@@ -151,14 +148,16 @@ def soa_update(soa, origin):
     return [Op("add", origin, SOA, soa.ttl, (soa[0],))]
 
 
-def update_ops(ctx, base_soa, new_soa, prereqs, dels, adds, final):
-    """-> (all steps of the UPDATE in order, SOA RRset sent or None, conflicting
-    SOA fields): prerequisites, deletes, adds, final deletes (see
-    compute_update()). The SOA is merged with the live zone at the moment this
-    is called."""
-    live = live_soa(ctx) if changes.soa_changed(base_soa, new_soa) else None
-    soa, conflicts = changes.soa_to_send(base_soa, new_soa, live)
-    return prereqs + dels + adds + soa_update(soa, ctx.origin) + final, soa, conflicts
+def update_ops(ctx, edit):
+    """-> (all steps of the UPDATE for the ChangeSet edit in order, SOA RRset sent
+    or None, conflicting SOA fields): prerequisites, deletes, adds, final deletes
+    (see compute_update()). The SOA is merged with the live zone at the moment
+    this is called."""
+    dels, adds, final = compute_update(edit, ctx.origin)
+    live = live_soa(ctx) if edit.soa_changed else None
+    soa, conflicts = changes.soa_to_send(edit.base_soa, edit.new_soa, live)
+    ops = compute_prereqs(edit, ctx.origin) + dels + adds + soa_update(soa, ctx.origin) + final
+    return ops, soa, conflicts
 
 
 def op_lines(op, origin):
@@ -181,9 +180,9 @@ def script_text(server, port, origin, ops):
     return "\n".join(lines + [line for op in ops for line in op_lines(op, origin)] + ["send", ""])
 
 
-def make_script(ctx, *plan):
+def make_script(ctx, edit):
     """-> (nsupdate script, SOA RRset sent or None, conflicting SOA fields)."""
-    ops, soa, conflicts = update_ops(ctx, *plan)
+    ops, soa, conflicts = update_ops(ctx, edit)
     return script_text(ctx.server, ctx.port, ctx.origin, ops), soa, conflicts
 
 
