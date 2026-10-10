@@ -9,7 +9,7 @@ import dns.zone
 import pytest
 from helpers import ORIGIN, SOA, addrs, model, soa_rd, zone
 
-from zedit import cli, rfc2136, session
+from zedit import changes, cli, rfc2136, session
 from zedit.model import ZeditError
 
 
@@ -36,7 +36,7 @@ def verify_with(monkeypatch, results, serials=(), attempts=None):
     monkeypatch.setattr(session.time, "sleep", lambda s: None)
     base = zone("www A 192.0.2.10\n")
     new = zone("www A 192.0.2.11\n")
-    return session.verify(None, base, new, attempts=attempts or len(results))
+    return session.verify(None, changes.change_set(base, new), attempts=attempts or len(results))
 
 
 def test_verify_transfers_again_only_when_the_serial_moved(monkeypatch):

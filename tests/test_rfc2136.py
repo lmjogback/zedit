@@ -2,7 +2,7 @@ import socket
 from types import SimpleNamespace
 
 import pytest
-from helpers import ORIGIN, lines, model
+from helpers import ORIGIN, changeset, lines, model
 
 from zedit import changes, rfc2136
 
@@ -10,7 +10,7 @@ from zedit import changes, rfc2136
 def test_compute_update_minimal_and_ordered():
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\nfoo A 192.0.2.9\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nfoo CNAME www\n")
-    dels, adds, final = rfc2136.compute_update(old, new, ORIGIN)
+    dels, adds, final = rfc2136.compute_update(changeset(old, new), ORIGIN)
     assert lines(dels) == [
         "update delete foo.example.com. IN A",
         "update delete www.example.com. IN A 192.0.2.2",
@@ -24,7 +24,7 @@ def test_compute_update_minimal_and_ordered():
 def test_ttl_change_replaces_rrset():
     old, _, _ = model("www 300 A 192.0.2.1\n")
     new, _, _ = model("www 60 A 192.0.2.1\n")
-    dels, adds, final = rfc2136.compute_update(old, new, ORIGIN)
+    dels, adds, final = rfc2136.compute_update(changeset(old, new), ORIGIN)
     assert lines(dels) == ["update delete www.example.com. IN A"]
     assert lines(adds) == ["update add www.example.com. 60 IN A 192.0.2.1"]
     assert final == []
@@ -44,14 +44,13 @@ def test_apex_ns_added_before_deleted(old_ns, new_ns, adds, final):
     one by one, never the whole RRset."""
     old, _, _ = model(old_ns)
     new, _, _ = model(new_ns)
-    d, a, f = rfc2136.compute_update(old, new, ORIGIN)
+    d, a, f = rfc2136.compute_update(changeset(old, new), ORIGIN)
     assert d == []
     assert [x.removeprefix("update add example.com. ") for x in lines(a)] == adds
     assert [x.removeprefix("update delete example.com. ") for x in lines(f)] == final
     # update_ops() puts the final deletes last
     ctx = SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53)
-    _, soa, _ = model("")
-    ops, _, _ = rfc2136.update_ops(ctx, soa, soa, [], d, a, f)
+    ops, _, _ = rfc2136.update_ops(ctx, changeset(old, new))
     script = rfc2136.script_text(ctx.server, ctx.port, ORIGIN, ops)
     assert all(script.index(x) < script.index(y) for x in lines(a) for y in lines(f))
 
@@ -69,7 +68,7 @@ def test_soa_update_bumps_serial_and_wraps():
 def test_prereqs_only_on_touched_rrsets():
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\nmail A 192.0.2.9\ngone TXT x\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nmail A 192.0.2.9\nnew A 192.0.2.4\n")
-    assert sorted(lines(rfc2136.compute_prereqs(old, new, ORIGIN))) == [
+    assert sorted(lines(rfc2136.compute_prereqs(changeset(old, new), ORIGIN))) == [
         "prereq nxrrset new.example.com. IN A",
         'prereq yxrrset gone.example.com. IN TXT "x"',
         "prereq yxrrset www.example.com. IN A 192.0.2.1",
@@ -158,8 +157,8 @@ def plan_ops():
     """Prerequisites, deletes and adds for a typical edit."""
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\ngone TXT x\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nnew A 192.0.2.4\n")
-    dels, adds, final = rfc2136.compute_update(old, new, ORIGIN)
-    return rfc2136.compute_prereqs(old, new, ORIGIN) + dels + adds + final
+    dels, adds, final = rfc2136.compute_update(changeset(old, new), ORIGIN)
+    return rfc2136.compute_prereqs(changeset(old, new), ORIGIN) + dels + adds + final
 
 
 def test_update_message_sections():

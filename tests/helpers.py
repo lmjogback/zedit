@@ -4,7 +4,7 @@ import dns.exception
 import dns.name
 import dns.zone
 
-from zedit import rfc2136, zonefile
+from zedit import changes, rfc2136, zonefile
 from zedit.model import Zone
 
 ORIGIN = dns.name.from_text("example.com.")
@@ -20,6 +20,12 @@ def model(body, soa=SOA):
 def zone(body, soa=SOA):
     """model() as a Zone."""
     return Zone(*model(body, soa))
+
+
+def changeset(old, new):
+    """The ChangeSet from records old to records new, with the SOA unchanged."""
+    soa = model("")[1]
+    return changes.change_set(Zone(old, soa), Zone(new, soa))
 
 
 def key(name, t):

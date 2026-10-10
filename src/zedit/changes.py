@@ -1,12 +1,61 @@
-"""What an edit changes, independent of how it is sent: SOA and warnings."""
+"""What an edit changes, independent of how it is sent: the ChangeSet a backend
+receives, the SOA to send, and warnings."""
 
 import re
+from dataclasses import dataclass
 
 import dns.rdataset
 import dns.rdatatype
 
 from zedit import merge
-from zedit.model import FILTERED_AT_APEX, SIGNAL_LABEL, SOA_EDITABLE, ZeditError, same, sortkey, tname
+from zedit.model import (
+    FILTERED_AT_APEX,
+    SIGNAL_LABEL,
+    SOA_EDITABLE,
+    RRKey,
+    ZeditError,
+    Zone,
+    same,
+    sortkey,
+    tname,
+)
+
+
+@dataclass(frozen=True)
+class RRsetChange:
+    """One RRset the edit changes: as transferred (None if it is created) and
+    as edited (None if it is deleted)."""
+
+    key: RRKey
+    old: dns.rdataset.Rdataset | None
+    new: dns.rdataset.Rdataset | None
+
+
+@dataclass(frozen=True)
+class ChangeSet:
+    """An edit as what it changes, whatever sends it: the changed RRsets in
+    canonical order (apex first), and the SOA as transferred and as edited."""
+
+    rrsets: tuple[RRsetChange, ...]
+    base_soa: dns.rdataset.Rdataset
+    new_soa: dns.rdataset.Rdataset
+
+    @property
+    def soa_changed(self):
+        return soa_changed(self.base_soa, self.new_soa)
+
+
+def change_set(base: Zone, new: Zone) -> ChangeSet:
+    keys = sorted(set(base.records) | set(new.records), key=sortkey)
+    return ChangeSet(
+        tuple(
+            RRsetChange(k, base.records.get(k), new.records.get(k))
+            for k in keys
+            if not same(base.records.get(k), new.records.get(k))
+        ),
+        base.soa,
+        new.soa,
+    )
 
 
 def signal_warnings(base, new):
@@ -67,17 +116,17 @@ def serial_max(a, b):
     return b if 0 < (b - a) % 2**32 < 2**31 else a
 
 
-def change_count(old, new):
+def change_count(edit):
     """-> (records deleted, records added), as the diff shows them: a deleted
     RRset counts each of its records, and so does an RRset whose TTL changes,
     on both sides."""
     dels = adds = 0
-    for key in set(old) | set(new):
-        o, n = old.get(key), new.get(key)
+    for c in edit.rrsets:
+        o, n = c.old, c.new
         if o is not None and n is not None and o.ttl == n.ttl:
             dels += sum(r not in n for r in o)
             adds += sum(r not in o for r in n)
-        elif not same(o, n):
+        else:
             dels += len(o or ())
             adds += len(n or ())
     return dels, adds
