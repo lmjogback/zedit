@@ -36,15 +36,20 @@ def test_dnssec_types_filtered():
     assert {k[1] for k in rejected} == {51, 65534}
 
 
+def lines(ops):
+    """Ops as the nsupdate commands zedit shows."""
+    return [line for op in ops for line in cli.op_lines(op, ORIGIN)]
+
+
 def test_compute_update_minimal_and_ordered():
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\nfoo A 192.0.2.9\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nfoo CNAME www\n")
     dels, adds, final = cli.compute_update(old, new, ORIGIN)
-    assert dels == [
+    assert lines(dels) == [
         "update delete foo.example.com. IN A",
         "update delete www.example.com. IN A 192.0.2.2",
     ]
-    assert sorted(adds) == [
+    assert sorted(lines(adds)) == [
         "update add foo.example.com. 300 IN CNAME www.example.com.",
         "update add www.example.com. 300 IN A 192.0.2.3",
     ]
@@ -54,9 +59,30 @@ def test_ttl_change_replaces_rrset():
     old, _, _ = model("www 300 A 192.0.2.1\n")
     new, _, _ = model("www 60 A 192.0.2.1\n")
     dels, adds, final = cli.compute_update(old, new, ORIGIN)
-    assert dels == ["update delete www.example.com. IN A"]
-    assert adds == ["update add www.example.com. 60 IN A 192.0.2.1"]
+    assert lines(dels) == ["update delete www.example.com. IN A"]
+    assert lines(adds) == ["update add www.example.com. 60 IN A 192.0.2.1"]
     assert final == []
+
+
+def test_change_count_counts_records_as_the_diff_shows_them():
+    """The summary before sending counts the records the diff adds and removes."""
+    old, _, _ = model(
+        "www 300 A 192.0.2.1\nmx 300 A 192.0.2.5\nttl 300 A 192.0.2.7\nttl 300 A 192.0.2.8\n"
+        "twenties 60 A 127.0.0.20\ntwenties 60 A 127.0.0.21\ntwenties 60 A 127.0.0.22\n"
+    )
+    new, _, _ = model(
+        "www 300 A 192.0.2.1\nwww 300 A 192.0.2.2\nmx 300 A 192.0.2.6\n"
+        "ttl 60 A 192.0.2.7\nttl 60 A 192.0.2.8\n"
+        "tens 60 A 127.0.0.10\ntens 60 A 127.0.0.11\ntens 60 A 127.0.0.12\n"
+    )
+    # deleted: mx, ttl x2 (new TTL), twenties x3; added: www, mx, ttl x2, tens x3
+    assert cli.change_count(old, new) == (6, 7)
+    assert cli.change_count(old, old) == (0, 0)
+    old_lines, new_lines = cli.rr_lines(old, ORIGIN), cli.rr_lines(new, ORIGIN)
+    assert cli.change_count(old, new) == (
+        len(set(old_lines) - set(new_lines)),
+        len(set(new_lines) - set(old_lines)),
+    )
 
 
 @pytest.mark.parametrize(
@@ -75,17 +101,21 @@ def test_apex_ns_added_before_deleted(old_ns, new_ns, adds, final):
     new, _, _ = model(new_ns)
     d, a, f = cli.compute_update(old, new, ORIGIN)
     assert d == []
-    assert [x.removeprefix("update add example.com. ") for x in a] == adds
-    assert [x.removeprefix("update delete example.com. ") for x in f] == final
-    script = cli.build_script("192.0.2.53", 53, ORIGIN, [], d, a, f)
-    assert all(script.index(x) < script.index(y) for x in a for y in f)
+    assert [x.removeprefix("update add example.com. ") for x in lines(a)] == adds
+    assert [x.removeprefix("update delete example.com. ") for x in lines(f)] == final
+    # update_ops() puts the final deletes last
+    ctx = cli.SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53)
+    _, soa, _ = model("")
+    ops, _, _ = cli.update_ops(ctx, soa, soa, [], d, a, f)
+    script = cli.script_text(ctx.server, ctx.port, ORIGIN, ops)
+    assert all(script.index(x) < script.index(y) for x in lines(a) for y in lines(f))
 
 
 def test_soa_update_bumps_serial_and_wraps():
     _, old, _ = model("", soa="@ 3600 IN SOA ns1 hm 4294967295 7200 900 1209600 300\n")
     _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 4294967295 7200 900 1209600 60\n")
     soa, conflicts = cli.soa_to_send(old, new, old)
-    (line,) = cli.soa_update(soa, ORIGIN)
+    (line,) = lines(cli.soa_update(soa, ORIGIN))
     assert " 0 7200 900 1209600 60" in line and conflicts == []
     assert cli.soa_to_send(old, old, None) == (None, [])
     assert cli.soa_update(None, ORIGIN) == []
@@ -156,7 +186,7 @@ def test_merge_soa_fieldwise():
 def test_prereqs_only_on_touched_rrsets():
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\nmail A 192.0.2.9\ngone TXT x\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nmail A 192.0.2.9\nnew A 192.0.2.4\n")
-    assert sorted(cli.compute_prereqs(old, new, ORIGIN)) == [
+    assert sorted(lines(cli.compute_prereqs(old, new, ORIGIN))) == [
         "prereq nxrrset new.example.com. IN A",
         'prereq yxrrset gone.example.com. IN TXT "x"',
         "prereq yxrrset www.example.com. IN A 192.0.2.1",
@@ -200,7 +230,7 @@ def test_soa_keeps_concurrent_changes_to_locked_fields():
     _, live, _ = model("", soa="@ 7200 IN SOA ns2 hm 105 7200 900 1209600 300\n")
     soa, conflicts = cli.soa_to_send(base, mine, live)
     assert (str(soa[0].mname), soa.ttl, soa[0].minimum, conflicts) == ("ns2", 7200, 60, [])
-    (line,) = cli.soa_update(soa, ORIGIN)
+    (line,) = lines(cli.soa_update(soa, ORIGIN))
     assert line == (
         "update add example.com. 7200 IN SOA ns2.example.com. hm.example.com. 106 7200 900 1209600 60"
     )
@@ -1006,13 +1036,13 @@ def test_key_file_with_one_key(tmp_path):
 
 
 def test_key_file_with_several_keys_is_an_error(tmp_path, capsys):
-    """nsupdate -k refuses a file with more than one key, so this fails at start
-    instead of after editing."""
+    """One key per file, as in 1.2.1, where nsupdate -k refused such a file;
+    kept so that the switch to dnspython changes no behaviour."""
     f = tmp_path / "two.key"
     f.write_text(KEY.format(name="admin") + KEY.format(name="other"))
     with pytest.raises(SystemExit):
         cli.load_bind_key(str(f))
-    assert "has 2 key statements (admin, other)" in capsys.readouterr().err
+    assert "has 2 key statements (admin, other); a key file must hold a single key" in capsys.readouterr().err
 
 
 def test_live_soa_names_are_relative_like_the_transfer(monkeypatch):
@@ -1141,3 +1171,86 @@ def test_non_ascii_names_use_idna_2008():
 def test_invalid_idn_is_an_error_on_its_line(record):
     with pytest.raises(ValueError, match="^line 4: IDNA"):
         cli.parse_text("$TTL 300\n" + SOA + "@ NS ns1\n" + record + "\n", ORIGIN)
+
+
+def plan_ops():
+    """Prerequisites, deletes and adds for a typical edit."""
+    old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\ngone TXT x\n")
+    new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nnew A 192.0.2.4\n")
+    dels, adds, final = cli.compute_update(old, new, ORIGIN)
+    return cli.compute_prereqs(old, new, ORIGIN) + dels + adds + final
+
+
+def test_update_message_sections():
+    """RFC 2136 encoding: value-dependent prerequisites in class IN with TTL 0,
+    "RRset does not exist" in class NONE, deleting an RRset in class ANY,
+    deleting one RR in class NONE with TTL 0."""
+    msg = cli.update_message(ORIGIN, plan_ops())
+    sections = {
+        name: sorted(" ".join(line.split()) for rrset in rrsets for line in rrset.to_text().splitlines())
+        for name, rrsets in (("prereq", msg.prerequisite), ("update", msg.update))
+    }
+    assert sections == {
+        "prereq": [
+            'gone.example.com. 0 IN TXT "x"',
+            "new.example.com. NONE A",
+            "www.example.com. 0 IN A 192.0.2.1",
+            "www.example.com. 0 IN A 192.0.2.2",
+        ],
+        "update": [
+            "gone.example.com. ANY TXT",
+            "new.example.com. 300 IN A 192.0.2.4",
+            "www.example.com. 0 NONE A 192.0.2.2",
+            "www.example.com. 300 IN A 192.0.2.3",
+        ],
+    }
+    assert msg.zone[0].name == ORIGIN and not msg.had_tsig
+
+
+def test_update_message_is_signed_with_the_key():
+    keyring = cli.dns.tsigkeyring.from_text({"admin": ("hmac-sha256", "c2VjcmV0c2VjcmV0c2VjcmV0")})
+    msg = cli.update_message(ORIGIN, plan_ops(), keyring, cli.dns.name.from_text("admin"))
+    msg.to_wire()  # signs
+    assert msg.keyname == cli.dns.name.from_text("admin") and msg.had_tsig
+
+
+def test_script_text_matches_the_ops():
+    script = cli.script_text("192.0.2.53", 53, ORIGIN, plan_ops())
+    assert script.splitlines()[:2] == ["server 192.0.2.53 53", "zone example.com."]
+    assert script.splitlines()[-1] == "send"
+    assert "prereq nxrrset new.example.com. IN A" in script
+    assert "update delete www.example.com. IN A 192.0.2.2" in script
+
+
+def send_with(monkeypatch, outcome):
+    """Run cli.send_update() with dns.query.tcp answering with rcode outcome, or
+    raising it."""
+
+    def tcp(msg, server, port, timeout):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        response = cli.dns.message.make_response(msg)
+        response.set_rcode(outcome)
+        return response
+
+    monkeypatch.setattr(cli.dns.query, "tcp", tcp)
+    ctx = cli.SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53, keyring=None, keyname=None)
+    return cli.send_update(ctx, plan_ops())
+
+
+@pytest.mark.parametrize(
+    ("outcome", "ok", "can_rebase", "text"),
+    [
+        (cli.dns.rcode.NOERROR, True, False, ""),
+        (cli.dns.rcode.NXRRSET, False, True, "NXRRSET"),
+        (cli.dns.rcode.YXRRSET, False, True, "YXRRSET"),
+        (cli.dns.rcode.REFUSED, False, False, "REFUSED"),
+        (cli.dns.rcode.NOTAUTH, False, False, "NOTAUTH"),
+        (cli.dns.exception.Timeout(), False, True, "unknown whether"),
+        (EOFError(), False, True, "unknown whether"),
+        (ConnectionRefusedError(111, "Connection refused"), False, False, "Connection refused"),
+    ],
+)
+def test_send_update_outcomes(monkeypatch, outcome, ok, can_rebase, text):
+    result = send_with(monkeypatch, outcome)
+    assert result[0] == ok and result[2] == can_rebase and text in result[1]

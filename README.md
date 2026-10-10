@@ -4,7 +4,7 @@ Edit a dynamic DNS zone as if it were a plain zone file.
 
 `zedit` transfers the zone with AXFR, strips DNSSEC and other server-maintained
 records, opens it in `$EDITOR`, shows a semantic diff of your changes, and on
-confirmation applies them with **one atomic `nsupdate`** guarded by
+confirmation applies them with **one atomic DNS UPDATE** guarded by
 prerequisites on exactly the RRsets you touched, then **verifies** the result.
 Concurrent changes elsewhere in the zone (DHCP/DDNS, another admin) don't
 conflict; if someone changed the same RRsets, your edits are **rebased** onto
@@ -27,14 +27,10 @@ Send? [y]es / [N]o / [e]dit / [s]cript:
 
 ## Install
 
-Requires Python ≥ 3.10 and `nsupdate` from BIND (not installable via pip):
+Requires Python ≥ 3.10. zedit talks DNS itself (AXFR and UPDATE, with
+[dnspython](https://www.dnspython.org/)), so no BIND tools are needed.
 
-```sh
-sudo apt install bind9-dnsutils     # Debian/Ubuntu
-brew install bind                   # macOS
-```
-
-Then install `zedit` as an isolated tool with [uv](https://docs.astral.sh/uv/):
+Install `zedit` as an isolated tool with [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv tool install git+https://github.com/lmjogback/zedit
@@ -43,6 +39,19 @@ uvx --from git+https://github.com/lmjogback/zedit zedit --help
 ```
 
 `pipx install git+https://github.com/lmjogback/zedit` works too.
+
+To try a change before it is released, add `@BRANCH` (or a tag or commit) to
+the URL. `--refresh` makes uv fetch the branch again instead of using a cached
+copy, and `--force` replaces an installed zedit:
+
+```sh
+uvx --refresh --from git+https://github.com/lmjogback/zedit@BRANCH zedit --help
+uv tool install --force git+https://github.com/lmjogback/zedit@BRANCH
+# back to main
+uv tool install --force git+https://github.com/lmjogback/zedit
+```
+
+Until the release, `zedit --version` shows the previous version number.
 
 ## Usage
 
@@ -58,7 +67,7 @@ zedit [-s SERVER] [-p PORT] [-k KEYFILE] [-a] [--no-rrsig] [-A] [-n] [-r FILE] z
 | `-a`, `--show-all` | Also show DNSSEC and server-maintained records, as read-only `;ro` comment lines |
 | `--no-rrsig` | With `--show-all`, leave out RRSIG, NSEC and NSEC3 (implies `-a`) |
 | `-A`, `--addresses` | In reverse zones, show owner names as IP addresses |
-| `-n`, `--dry-run` | Show the `nsupdate` script, send nothing; the session is kept for `--resume` |
+| `-n`, `--dry-run` | Show the update as an `nsupdate` script, send nothing; the session is kept for `--resume` |
 | `-r`, `--resume FILE` | Resume a saved session (rebases onto the current zone) |
 
 When the server or key comes from a default, zedit prints which ones it uses.
@@ -78,8 +87,7 @@ Without `-k`, the first of these that exists is used:
 3. `~/.config/zedit/default.key`
 
 If none exists, zedit runs without TSIG. zedit warns if the key file is readable by
-group or others. A key file must hold a single key, since `nsupdate` refuses
-files with more than one.
+group or others. A key file must hold a single key.
 
 ```sh
 mkdir -p ~/.config/zedit/keys && chmod 700 ~/.config/zedit
@@ -264,7 +272,7 @@ TTL), the prerequisite still holds and the server gives the whole RRset your
 TTL, undoing theirs. Verification doesn't notice, since the result matches your
 edit.
 
-**Verification.** After a successful `nsupdate`, zedit transfers the zone again
+**Verification.** After a successful UPDATE, zedit transfers the zone again
 and checks that every changed RRset matches your edit. It retries for about 15
 seconds, since inline-signing updates the signed zone asynchronously; a retry
 queries the SOA first and transfers again only if the serial has moved. BIND
@@ -273,7 +281,7 @@ with a non-greater serial, or TTLs above a `dnssec-policy` `max-zone-ttl`.
 Mismatches are listed and zedit exits with status 3, as it does if the zone
 can't be transferred again.
 
-**Rebase.** On NXRRSET/YXRRSET (or an `nsupdate` timeout) you can rebase. zedit does a
+**Rebase.** On NXRRSET/YXRRSET (or a timeout) you can rebase. zedit does a
 new AXFR and merges per RRset:
 
 - changed only by you → yours
@@ -306,7 +314,7 @@ if its permissions have since been opened to others.
 ```sh
 uv sync
 uv run zedit --help
-uv run pytest                 # integration tests run if named/nsupdate/dig are installed
+uv run pytest                 # integration tests need BIND (named, nsupdate, dig); zedit itself does not
 uv run ruff check . && uv run ruff format .
 ```
 

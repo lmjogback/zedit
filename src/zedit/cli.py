@@ -3,7 +3,7 @@
 
 Flow:
   AXFR (TSIG) -> strip DNSSEC/server-maintained types -> $EDITOR
-  -> semantic diff -> confirmation -> nsupdate (one atomic UPDATE with
+  -> semantic diff -> confirmation -> one atomic UPDATE (RFC 2136, with
   value-dependent prerequisites on exactly the RRsets it touches, acting as
   an optimistic lock) -> verification by a fresh AXFR.
 
@@ -15,11 +15,11 @@ Flow:
 Error handling:
   The edit is saved in $XDG_STATE_HOME/zedit (default ~/.local/state/zedit)
   together with FILE.base = the zone as transferred. If the server changed
-  RRsets you touched (prereq -> NXRRSET/YXRRSET) or nsupdate times out, the edit can be
+  RRsets you touched (prereq -> NXRRSET/YXRRSET) or the UPDATE times out, the edit can be
   rebased: new AXFR + three-way merge (base, mine, theirs).
   Aborted/failed sessions are resumed with --resume FILE.
 
-Requires: python >= 3.10, dnspython >= 2.4, nsupdate (bind9-dnsutils).
+Requires: python >= 3.10, dnspython >= 2.4.
 """
 
 import argparse
@@ -38,17 +38,20 @@ import sys
 import tempfile
 import time
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import dns.exception
 import dns.message
 import dns.name
 import dns.query
+import dns.rcode
 import dns.rdataclass
 import dns.rdataset
 import dns.rdatatype
 import dns.resolver
 import dns.tokenizer
 import dns.tsigkeyring
+import dns.update
 import dns.zone
 import dns.zonefile
 
@@ -101,9 +104,8 @@ def load_bind_key(path):
     if not keys:
         die(f"no key statement found in {path}")
     if len(keys) > 1:
-        # zedit would use the first for AXFR, but nsupdate -k refuses the file
         names = ", ".join(name for name, _ in keys)
-        die(f"{path} has {len(keys)} key statements ({names}); nsupdate accepts only one key per file")
+        die(f"{path} has {len(keys)} key statements ({names}); a key file must hold a single key")
     ((name, body),) = keys
     alg = re.search(r'algorithm\s+"?([\w.-]+)"?\s*;', body)
     sec = re.search(r'secret\s+"([^"]+)"\s*;', body)
@@ -896,36 +898,67 @@ def keep_base_case(base, base_soa, new, new_soa):
     return out, new_soa, reverted
 
 
+class Op(NamedTuple):
+    """One step of an UPDATE (RFC 2136), on an absolute name. The same list of
+    steps gives the message that is sent and the nsupdate script that is shown.
+
+    kind "absent":  prerequisite, the RRset does not exist
+         "present": prerequisite, the RRset exists with exactly these rdatas
+         "delete":  delete these rdatas, or the whole RRset if there are none
+         "add":     add these rdatas with this TTL"""
+
+    kind: str
+    name: dns.name.Name
+    rdtype: int
+    ttl: int | None = None
+    rdatas: tuple = ()
+
+
 def compute_update(old, new, origin):
-    """-> (deletes, adds, final deletes). Deletes go before adds (handles e.g.
-    A -> CNAME), except at the apex NS RRset: RFC 2136 §3.4.2.4 has the server
-    ignore deleting the apex NS RRset or its last record, so there the new
-    records are added first and the old ones deleted after ("final deletes")."""
+    """-> (deletes, adds, final deletes): only the records that change. Deletes go
+    before adds (handles e.g. A -> CNAME), except at the apex NS RRset: RFC 2136
+    §3.4.2.4 has the server ignore deleting the apex NS RRset or its last record,
+    so there the new records are added first and the old ones deleted after
+    ("final deletes"), record by record. Elsewhere a TTL change replaces the
+    whole RRset, since the TTL applies to all of it."""
     dels, adds, final = [], [], []
-
-    def rd(r):
-        return r.to_text(origin=origin, relativize=False)
-
     for key in sorted(set(old) | set(new), key=sortkey):
         o, n = old.get(key), new.get(key)
-        fq = key[0].derelativize(origin).to_text()
-        tt = tname(key[1])
+        name, t = key[0].derelativize(origin), key[1]
         if key == (dns.name.empty, NS) and o is not None and n is not None:
-            changed = list(n) if o.ttl != n.ttl else [r for r in n if r not in o]
-            adds += [f"update add {fq} {n.ttl} IN {tt} {rd(r)}" for r in changed]
-            final += [f"update delete {fq} IN {tt} {rd(r)}" for r in o if r not in n]
+            if changed := tuple(n) if o.ttl != n.ttl else tuple(r for r in n if r not in o):
+                adds.append(Op("add", name, t, n.ttl, changed))
+            if gone := tuple(r for r in o if r not in n):
+                final.append(Op("delete", name, t, rdatas=gone))
         elif o is None:
-            adds += [f"update add {fq} {n.ttl} IN {tt} {rd(r)}" for r in n]
+            adds.append(Op("add", name, t, n.ttl, tuple(n)))
         elif n is None:
-            dels.append(f"update delete {fq} IN {tt}")
+            dels.append(Op("delete", name, t))
         elif o.ttl != n.ttl:
-            # TTL applies to the whole RRset -> replace it entirely
-            dels.append(f"update delete {fq} IN {tt}")
-            adds += [f"update add {fq} {n.ttl} IN {tt} {rd(r)}" for r in n]
+            dels.append(Op("delete", name, t))
+            adds.append(Op("add", name, t, n.ttl, tuple(n)))
         else:
-            dels += [f"update delete {fq} IN {tt} {rd(r)}" for r in o if r not in n]
-            adds += [f"update add {fq} {n.ttl} IN {tt} {rd(r)}" for r in n if r not in o]
+            if gone := tuple(r for r in o if r not in n):
+                dels.append(Op("delete", name, t, rdatas=gone))
+            if added := tuple(r for r in n if r not in o):
+                adds.append(Op("add", name, t, n.ttl, added))
     return dels, adds, final
+
+
+def change_count(old, new):
+    """-> (records deleted, records added), as the diff shows them: a deleted
+    RRset counts each of its records, and so does an RRset whose TTL changes,
+    on both sides."""
+    dels = adds = 0
+    for key in set(old) | set(new):
+        o, n = old.get(key), new.get(key)
+        if o is not None and n is not None and o.ttl == n.ttl:
+            dels += sum(r not in n for r in o)
+            adds += sum(r not in o for r in n)
+        elif not same(o, n):
+            dels += len(o or ())
+            adds += len(n or ())
+    return dels, adds
 
 
 def compute_prereqs(old, new, origin):
@@ -938,12 +971,8 @@ def compute_prereqs(old, new, origin):
         o, n = old.get(key), new.get(key)
         if same(o, n):
             continue
-        fq = key[0].derelativize(origin).to_text()
-        tt = tname(key[1])
-        if o is None:
-            out.append(f"prereq nxrrset {fq} IN {tt}")
-        else:
-            out += [f"prereq yxrrset {fq} IN {tt} {r.to_text(origin=origin, relativize=False)}" for r in o]
+        name, t = key[0].derelativize(origin), key[1]
+        out.append(Op("absent", name, t) if o is None else Op("present", name, t, rdatas=tuple(o)))
     return out
 
 
@@ -1012,33 +1041,63 @@ def soa_to_send(base_rds, new_rds, live):
 
 
 def soa_update(soa, origin):
-    """The nsupdate line that sets the SOA (an RRset), or none."""
+    """The step that sets the SOA (an RRset), or none."""
     if soa is None:
         return []
-    return [f"update add {origin} {soa.ttl} IN SOA {soa[0].to_text(origin=origin, relativize=False)}"]
+    return [Op("add", origin, SOA, soa.ttl, (soa[0],))]
 
 
-def build_script(server, port, origin, prereqs, dels, adds, final=()):
-    lines = [f"server {server} {port}", f"zone {origin}"]
-    # Deletes before adds, final deletes last; see compute_update()
-    return "\n".join(lines + prereqs + dels + adds + list(final) + ["send", ""])
-
-
-def make_script(ctx, base_soa, new_soa, prereqs, dels, adds, final):
-    """-> (nsupdate script, SOA RRset sent or None, conflicting SOA fields).
-    The SOA is merged with the live zone at the moment this is called."""
+def update_ops(ctx, base_soa, new_soa, prereqs, dels, adds, final):
+    """-> (all steps of the UPDATE in order, SOA RRset sent or None, conflicting
+    SOA fields): prerequisites, deletes, adds, final deletes (see
+    compute_update()). The SOA is merged with the live zone at the moment this
+    is called."""
     live = live_soa(ctx) if soa_changed(base_soa, new_soa) else None
     soa, conflicts = soa_to_send(base_soa, new_soa, live)
-    script = build_script(
-        ctx.server,
-        ctx.port,
-        ctx.origin,
-        prereqs,
-        dels,
-        adds + soa_update(soa, ctx.origin),
-        final,
-    )
-    return script, soa, conflicts
+    return prereqs + dels + adds + soa_update(soa, ctx.origin) + final, soa, conflicts
+
+
+def op_lines(op, origin):
+    """An Op as nsupdate commands."""
+    name, t = op.name.to_text(), tname(op.rdtype)
+    rds = [r.to_text(origin=origin, relativize=False) for r in op.rdatas]
+    if op.kind == "absent":
+        return [f"prereq nxrrset {name} IN {t}"]
+    if op.kind == "present":
+        return [f"prereq yxrrset {name} IN {t} {rd}" for rd in rds]
+    if op.kind == "delete":
+        return [f"update delete {name} IN {t} {rd}" for rd in rds] or [f"update delete {name} IN {t}"]
+    return [f"update add {name} {op.ttl} IN {t} {rd}" for rd in rds]
+
+
+def script_text(server, port, origin, ops):
+    """The UPDATE as an nsupdate script, for --dry-run and [s]cript. It can be
+    sent by hand with nsupdate -v -k KEYFILE."""
+    lines = [f"server {server} {port}", f"zone {origin}"]
+    return "\n".join(lines + [line for op in ops for line in op_lines(op, origin)] + ["send", ""])
+
+
+def make_script(ctx, *plan):
+    """-> (nsupdate script, SOA RRset sent or None, conflicting SOA fields)."""
+    ops, soa, conflicts = update_ops(ctx, *plan)
+    return script_text(ctx.server, ctx.port, ctx.origin, ops), soa, conflicts
+
+
+def update_message(origin, ops, keyring=None, keyname=None):
+    """The UPDATE as a DNS message, signed with TSIG if there is a key."""
+    msg = dns.update.UpdateMessage(origin)
+    for op in ops:
+        if op.kind == "absent":
+            msg.absent(op.name, op.rdtype)
+        elif op.kind == "present":
+            msg.present(op.name, *op.rdatas)
+        elif op.kind == "delete":
+            msg.delete(op.name, *(op.rdatas or (op.rdtype,)))
+        else:
+            msg.add(op.name, op.ttl, *op.rdatas)
+    if keyring:
+        msg.use_tsig(keyring, keyname=keyname)
+    return msg
 
 
 def soa_conflict_message(conflicts):
@@ -1088,29 +1147,32 @@ def verify(ctx, base, new, soa=None, attempts=10):
     return bad
 
 
-def run_nsupdate(script, keyfile):
-    """-> (ok, output, rebase_makes_sense)"""
-    cmd = ["nsupdate", "-v", "-t", "60"] + (["-k", keyfile] if keyfile else [])
+UPDATE_TIMEOUT = 60
+UNKNOWN_OUTCOME = (
+    "unknown whether the update was applied. Rebasing is safe: changes already applied simply drop out."
+)
+
+
+def send_update(ctx, ops):
+    """Send the UPDATE over TCP. -> (ok, message, rebase_makes_sense)"""
+    msg = update_message(ctx.origin, ops, ctx.keyring, ctx.keyname)
     try:
-        p = subprocess.run(cmd, input=script, text=True, capture_output=True, timeout=120)
-    except FileNotFoundError:
-        return False, "nsupdate not found in PATH (bind9-dnsutils).", False
-    except subprocess.TimeoutExpired:
-        return (
-            False,
-            (
-                "nsupdate timed out - unknown whether the update was applied. "
-                "Rebasing is safe: changes already applied simply drop out."
-            ),
-            True,
-        )
-    out = (p.stdout + p.stderr).strip()
-    if p.returncode == 0:
-        return True, out, False
-    if "NXRRSET" in out or "YXRRSET" in out:
-        return False, out + "\nRRsets you changed were modified on the server after the transfer.", True
-    # REFUSED/NOTAUTH/BADKEY/SERVFAIL etc.: rebasing won't help
-    return False, out, False
+        response = dns.query.tcp(msg, ctx.server, port=ctx.port, timeout=UPDATE_TIMEOUT)
+    except dns.exception.Timeout:
+        return False, f"UPDATE timed out - {UNKNOWN_OUTCOME}", True
+    except (EOFError, ConnectionResetError):
+        return False, f"connection closed during the UPDATE - {UNKNOWN_OUTCOME}", True
+    except (OSError, dns.exception.DNSException) as e:
+        # e.g. connection refused, or a TSIG error (bad key, clock skew)
+        return False, f"UPDATE failed: {e}", False
+    rcode = response.rcode()
+    if rcode == dns.rcode.NOERROR:
+        return True, "", False
+    text = f"update failed: {dns.rcode.to_text(rcode)}"
+    if rcode in (dns.rcode.NXRRSET, dns.rcode.YXRRSET):
+        return False, text + "\nRRsets you changed were modified on the server after the transfer.", True
+    # REFUSED/NOTAUTH/SERVFAIL etc.: rebasing won't help
+    return False, text, False
 
 
 # ---------------------------------------------------------------- UI
@@ -1176,7 +1238,7 @@ def edit_until_valid(path, origin, base_soa):
 def resolve(host, port):
     """The address of host that first accepts a TCP connection on port, using
     Happy Eyeballs (RFC 8305): a server with an AAAA record is still reached
-    quickly over IPv4 when IPv6 doesn't work. AXFR and the UPDATE (nsupdate -v)
+    quickly over IPv4 when IPv6 doesn't work. AXFR and the UPDATE
     use TCP anyway."""
 
     async def connect():
@@ -1390,15 +1452,13 @@ def session(ctx, args):
             return 0
 
         dels, adds, final = compute_update(base, new, ctx.origin)
+        n_dels, n_adds = change_count(base, new)
         prereqs = compute_prereqs(base, new, ctx.origin)
         with_soa = soa_changed(base_soa, new_soa)
         plan = (base_soa, new_soa, prereqs, dels, adds, final)
 
         show_diff(old_lines, new_lines, f"{ctx.origin} (serial {base_soa[0].serial})", "edited")
-        print(
-            f"\n{len(dels) + len(final)} delete, {len(adds)} add{', SOA changed' if with_soa else ''}"
-            " in 1 atomic UPDATE."
-        )
+        print(f"\n{n_dels} delete, {n_adds} add{', SOA changed' if with_soa else ''} in 1 atomic UPDATE.")
         for w in signal_warnings(base, new) + ascii_warnings(base, new):
             print(f"Warning: {w}")
 
@@ -1424,11 +1484,11 @@ def session(ctx, args):
             hint(ctx, args, dry_run=True)
             return 0
 
-        script, sent_soa, conflicts = make_script(ctx, *plan)
+        ops, sent_soa, conflicts = update_ops(ctx, *plan)
         if conflicts:
             ok, out, can_rebase = False, soa_conflict_message(conflicts), True
         else:
-            ok, out, can_rebase = run_nsupdate(script, ctx.keyfile)
+            ok, out, can_rebase = send_update(ctx, ops)
         if ok:
             if out:
                 print(out)
@@ -1455,7 +1515,7 @@ def session(ctx, args):
 
 def make_parser():
     ap = argparse.ArgumentParser(
-        prog="zedit", description="Edit a dynamic DNS zone via AXFR + $EDITOR + nsupdate"
+        prog="zedit", description="Edit a dynamic DNS zone via AXFR + $EDITOR + DNS UPDATE"
     )
     ap.add_argument("zone")
     ap.add_argument("-s", "--server", help="primary server (default: the zone's SOA MNAME)")
@@ -1483,7 +1543,9 @@ def make_parser():
         action="store_true",
         help="in reverse zones, show owner names as IP addresses (input in address form always works)",
     )
-    ap.add_argument("-n", "--dry-run", action="store_true", help="show the nsupdate script, send nothing")
+    ap.add_argument(
+        "-n", "--dry-run", action="store_true", help="show the update as an nsupdate script, send nothing"
+    )
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("-r", "--resume", metavar="FILE", help="resume a saved edit (requires FILE.base)")
     return ap
