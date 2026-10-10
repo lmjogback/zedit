@@ -1,5 +1,4 @@
 import socket
-from types import SimpleNamespace
 
 import pytest
 from helpers import ORIGIN, changeset, lines, model
@@ -49,9 +48,9 @@ def test_apex_ns_added_before_deleted(old_ns, new_ns, adds, final):
     assert [x.removeprefix("update add example.com. ") for x in lines(a)] == adds
     assert [x.removeprefix("update delete example.com. ") for x in lines(f)] == final
     # update_ops() puts the final deletes last
-    ctx = SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53)
-    ops, _, _ = rfc2136.update_ops(ctx, changeset(old, new))
-    script = rfc2136.script_text(ctx.server, ctx.port, ORIGIN, ops)
+    server = rfc2136.Rfc2136Backend("192.0.2.53", 53, "ns")
+    ops, _, _ = rfc2136.update_ops(server, ORIGIN, changeset(old, new))
+    script = rfc2136.script_text(server.address, server.port, ORIGIN, ops)
     assert all(script.index(x) < script.index(y) for x in lines(a) for y in lines(f))
 
 
@@ -144,13 +143,13 @@ def test_live_soa_names_are_relative_like_the_transfer(monkeypatch):
         )
 
     monkeypatch.setattr(rfc2136.dns.query, "tcp", tcp)
-    ctx = SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53, keyring=None, keyname=None)
-    live = rfc2136.live_soa(ctx)
+    server = rfc2136.Rfc2136Backend("192.0.2.53", 53, "ns")
+    live = rfc2136.live_soa(server, ORIGIN)
     _, base, _ = model("", soa="@ 3600 IN SOA ns1 hostmaster 100 7200 900 1209600 300\n")
     assert (live[0].mname, live[0].rname, live[0].serial) == (base[0].mname, base[0].rname, 105)
     assert live.ttl == 3600
     answer = answer.replace("hostmaster.example.com.", "hostmaster.example.net.")
-    assert rfc2136.live_soa(ctx)[0].rname.to_text() == "hostmaster.example.net."
+    assert rfc2136.live_soa(server, ORIGIN)[0].rname.to_text() == "hostmaster.example.net."
 
 
 def plan_ops():
@@ -214,8 +213,8 @@ def send_with(monkeypatch, outcome):
         return response
 
     monkeypatch.setattr(rfc2136.dns.query, "tcp", tcp)
-    ctx = SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53, keyring=None, keyname=None)
-    return rfc2136.send_update(ctx, plan_ops())
+    server = rfc2136.Rfc2136Backend("192.0.2.53", 53, "ns")
+    return rfc2136.send_update(server, ORIGIN, plan_ops())
 
 
 @pytest.mark.parametrize(

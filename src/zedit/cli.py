@@ -4,13 +4,12 @@
 import argparse
 import os
 import sys
-from types import SimpleNamespace
 
 import dns.exception
 import dns.name
 
 from zedit import __version__, rfc2136, session
-from zedit.model import IDNA, ZeditError, die
+from zedit.model import IDNA, Options, die
 
 
 def config_dir():
@@ -87,36 +86,13 @@ def main():
     keyfile = args.keyfile or find_keyfile(origin)
     if keyfile:
         check_keyfile(keyfile)
-    ctx = SimpleNamespace(
-        origin=origin,
-        port=args.port,
-        server=address,
-        label=address if host.rstrip(".") == address else f"{host.rstrip('.')} ({address})",
-        keyfile=keyfile,
-        keyring=None,
-        keyname=None,
-        show_all=args.show_all or args.no_rrsig,
-        no_rrsig=args.no_rrsig,
-        addresses=args.addresses,
-        path=None,
-        basepath=None,
-    )
-    if keyfile:
-        ctx.keyring, ctx.keyname = rfc2136.load_bind_key(keyfile)
+    label = address if host.rstrip(".") == address else f"{host.rstrip('.')} ({address})"
+    keyring, keyname = rfc2136.load_bind_key(keyfile) if keyfile else (None, None)
+    server = rfc2136.Rfc2136Backend(address, args.port, label, keyring, keyname)
+    opts = Options(origin, args.show_all or args.no_rrsig, args.no_rrsig, args.addresses)
     if not args.server or not args.keyfile:
-        print(f"Server: {ctx.label}  Key: {keyfile or 'none'}", file=sys.stderr)
-
-    try:
-        rc = session.session(ctx, args)
-    except KeyboardInterrupt:
-        print()
-        rc = 130
-    except (ZeditError, OSError) as e:  # OSError: e.g. state directory not writable, disk full
-        print(f"zedit: {e}", file=sys.stderr)
-        rc = 1
-    if rc:
-        session.hint(ctx, args)
-    sys.exit(rc)
+        print(f"Server: {label}  Key: {keyfile or 'none'}", file=sys.stderr)
+    sys.exit(session.run(opts, server, args))
 
 
 if __name__ == "__main__":

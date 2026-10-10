@@ -10,11 +10,24 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 
 import dns.exception
 
 from zedit import changes, merge, rfc2136, zonefile
 from zedit.model import SOA_EDITABLE, SOA_KEY, ZeditError, same, tname
+
+
+@dataclass(frozen=True)
+class SessionFiles:
+    """A saved session: the edited zone file, and next to it FILE.base, the zone
+    as transferred, for the three-way merge."""
+
+    path: str
+
+    @property
+    def basepath(self):
+        return self.path + ".base"
 
 
 def write_tmp(path, text):
@@ -50,10 +63,10 @@ def write_pair(files):
             os.unlink(tmp)
 
 
-def rebase(ctx, base, mine):
-    """Transfer the zone again and merge mine into it, writing the session file
-    and its base. -> (the new base, number of conflicts)."""
-    theirs = rfc2136.fetch(ctx)
+def rebase(opts, server, files, base, mine):
+    """Transfer the zone again and merge mine into it, writing the session files.
+    -> (the new base, number of conflicts)."""
+    theirs = rfc2136.fetch(server, opts.origin)
     merged = merge.merge3(base.records, mine.records, theirs.records)
     soa = merge.merge_soa(base.soa, mine.soa, theirs.soa)
     notes = {**merged.notes, SOA_KEY: soa.notes} if soa.notes else merged.notes
@@ -63,19 +76,19 @@ def rebase(ctx, base, mine):
     write_pair(
         (
             (
-                ctx.path,
+                files.path,
                 zonefile.render_file(
                     soa.soa,
                     merged.records,
-                    ctx.origin,
-                    ctx.label,
+                    opts.origin,
+                    server.label,
                     notes,
                     extra,
-                    zonefile.shown(ctx, theirs.hidden),
-                    ctx.addresses,
+                    zonefile.shown(opts, theirs.hidden),
+                    opts.addresses,
                 ),
             ),
-            (ctx.basepath, zonefile.render_file(theirs.soa, theirs.records, ctx.origin, ctx.label)),
+            (files.basepath, zonefile.render_file(theirs.soa, theirs.records, opts.origin, server.label)),
         )
     )
     print(
@@ -91,7 +104,7 @@ def soa_conflict_message(conflicts):
     )
 
 
-def verify(ctx, edit, soa=None, attempts=10):
+def verify(server, origin, edit, soa=None, attempts=10):
     """Re-transfer the zone and check that every RRset the ChangeSet edit changes
     now matches it, and the SOA's MNAME and editable fields the SOA RRset sent (soa;
     None if the SOA wasn't sent). BIND silently drops some updates (CNAME rule, SOA with a
@@ -105,11 +118,11 @@ def verify(ctx, edit, soa=None, attempts=10):
         if i:
             time.sleep(min(0.25 * 2 ** (i - 1), 2))
         if serial is not None:
-            live = rfc2136.live_soa(ctx)
+            live = rfc2136.live_soa(server, origin)
             if live is not None and live[0].serial == serial:
                 continue  # the zone hasn't changed since the last transfer
         try:
-            after = rfc2136.fetch(ctx)
+            after = rfc2136.fetch(server, origin)
         except ZeditError as e:
             # The update was sent, so this is "not verified" (exit 3), not a plain error; retry
             bad, serial = [f"(zone transfer for verification failed: {e})"], None
@@ -241,25 +254,26 @@ def new_session_path(origin):
         return path
 
 
-def hint(ctx, args, dry_run=False):
-    if ctx.path and os.path.exists(ctx.path):
+def hint(files, args, dry_run=False):
+    if files and os.path.exists(files.path):
         how = "Send them with" if dry_run else "Resume with"
         print(
-            f"Your changes are saved in {ctx.path}\n{how}: {resume_command(args, ctx.path)}", file=sys.stderr
+            f"Your changes are saved in {files.path}\n{how}: {resume_command(args, files.path)}",
+            file=sys.stderr,
         )
 
 
-def cleanup(ctx):
-    for p in (ctx.path, ctx.basepath):
-        if p and os.path.exists(p):
+def cleanup(files):
+    for p in (files.path, files.basepath):
+        if os.path.exists(p):
             os.unlink(p)
 
 
-def discard_if_unchanged(ctx, base):
+def discard_if_unchanged(files, origin, base):
     """After an aborted edit, remove the session if its file still parses and
     holds no change from the base: there is nothing to resume. -> removed?"""
     try:
-        new = zonefile.parse_file(ctx.path, ctx.origin, base.soa)
+        new = zonefile.parse_file(files.path, origin, base.soa)
     except (dns.exception.DNSException, ValueError, OSError):
         return False
     new, _ = merge.keep_base_case(base, new)
@@ -269,60 +283,87 @@ def discard_if_unchanged(ctx, base):
         or not all(same(base.records[k], new.records[k]) for k in base.records)
     ):
         return False
-    cleanup(ctx)
+    cleanup(files)
     return True
 
 
-def session(ctx, args):
-    if args.resume:
-        ctx.path, ctx.basepath = args.resume, args.resume + ".base"
-        if not os.path.exists(ctx.basepath):
-            raise ZeditError(f"{ctx.basepath} missing - cannot three-way merge without a base")
-        try:
-            base = zonefile.parse_text(zonefile.read_text(ctx.basepath), ctx.origin)
-        except (dns.exception.DNSException, ValueError) as e:
-            raise ZeditError(f"{ctx.basepath} is invalid: {e}") from e
-        try:
-            mine = zonefile.parse_file(ctx.path, ctx.origin, base.soa)
-        except (dns.exception.DNSException, ValueError) as e:
-            print(f"The saved file is invalid: {e}")
-            mine = edit_until_valid(ctx.path, ctx.origin, base.soa)
-            if mine is None:
-                return 1
-        base, conflicts = rebase(ctx, base, mine)
-        need_edit = conflicts > 0
-    else:
-        base = rfc2136.fetch(ctx)
-        ctx.path = new_session_path(ctx.origin)
-        ctx.basepath = ctx.path + ".base"
-        write_pair(
+def start(opts, server, files, base):
+    """Write a new session for the zone as transferred (base)."""
+    write_pair(
+        (
+            (files.basepath, zonefile.render_file(base.soa, base.records, opts.origin, server.label)),
             (
-                (ctx.basepath, zonefile.render_file(base.soa, base.records, ctx.origin, ctx.label)),
-                (
-                    ctx.path,
-                    zonefile.render_file(
-                        base.soa,
-                        base.records,
-                        ctx.origin,
-                        ctx.label,
-                        hidden=zonefile.shown(ctx, base.hidden),
-                        addresses=ctx.addresses,
-                    ),
+                files.path,
+                zonefile.render_file(
+                    base.soa,
+                    base.records,
+                    opts.origin,
+                    server.label,
+                    hidden=zonefile.shown(opts, base.hidden),
+                    addresses=opts.addresses,
                 ),
-            )
+            ),
         )
-        need_edit = True
+    )
 
+
+def resume(opts, server, files):
+    """Rebase a saved session onto the zone as it is now. -> (the new base,
+    whether to open the editor first), or None if the user aborts."""
+    if not os.path.exists(files.basepath):
+        raise ZeditError(f"{files.basepath} missing - cannot three-way merge without a base")
+    try:
+        base = zonefile.parse_text(zonefile.read_text(files.basepath), opts.origin)
+    except (dns.exception.DNSException, ValueError) as e:
+        raise ZeditError(f"{files.basepath} is invalid: {e}") from e
+    try:
+        mine = zonefile.parse_file(files.path, opts.origin, base.soa)
+    except (dns.exception.DNSException, ValueError) as e:
+        print(f"The saved file is invalid: {e}")
+        mine = edit_until_valid(files.path, opts.origin, base.soa)
+        if mine is None:
+            return None
+    base, conflicts = rebase(opts, server, files, base, mine)
+    return base, conflicts > 0
+
+
+def run(opts, server, args):
+    """A whole session, new or resumed (args.resume). -> exit status. Errors are
+    reported here, and so is how to resume a session that is left."""
+    files = None
+    try:
+        if args.resume:
+            files = SessionFiles(args.resume)
+            started = resume(opts, server, files)
+        else:
+            base = rfc2136.fetch(server, opts.origin)
+            files = SessionFiles(new_session_path(opts.origin))
+            start(opts, server, files, base)
+            started = base, True
+        rc = 1 if started is None else edit_loop(opts, server, args, files, *started)
+    except KeyboardInterrupt:
+        print()
+        rc = 130
+    except (ZeditError, OSError) as e:  # OSError: e.g. state directory not writable, disk full
+        print(f"zedit: {e}", file=sys.stderr)
+        rc = 1
+    if rc:
+        hint(files, args)
+    return rc
+
+
+def edit_loop(opts, server, args, files, base, need_edit):
+    """Edit, review and send until done. -> exit status."""
     while True:
         if need_edit:
-            new = edit_until_valid(ctx.path, ctx.origin, base.soa)
+            new = edit_until_valid(files.path, opts.origin, base.soa)
             if new is None:
-                if discard_if_unchanged(ctx, base):
+                if discard_if_unchanged(files, opts.origin, base):
                     print("Aborted without changes.")
                 return 1
         else:
             try:
-                new = zonefile.parse_file(ctx.path, ctx.origin, base.soa)
+                new = zonefile.parse_file(files.path, opts.origin, base.soa)
             except (dns.exception.DNSException, ValueError) as e:
                 print(f"Error: {e}")
                 need_edit = True
@@ -335,21 +376,21 @@ def session(ctx, args):
                 "Letter case in DNS names is not significant, so case-only changes are not sent: "
                 + ", ".join(f"{k.name} {tname(k.rdtype)}" for k in recased)
             )
-        old_lines = [zonefile.soa_line(base.soa, ctx.origin)] + zonefile.rr_lines(
-            base.records, ctx.origin, addresses=ctx.addresses
+        old_lines = [zonefile.soa_line(base.soa, opts.origin)] + zonefile.rr_lines(
+            base.records, opts.origin, addresses=opts.addresses
         )
-        new_lines = [zonefile.soa_line(new.soa, ctx.origin)] + zonefile.rr_lines(
-            new.records, ctx.origin, addresses=ctx.addresses
+        new_lines = [zonefile.soa_line(new.soa, opts.origin)] + zonefile.rr_lines(
+            new.records, opts.origin, addresses=opts.addresses
         )
         if old_lines == new_lines:
             print("No differences from the server - nothing to send.")
-            cleanup(ctx)
+            cleanup(files)
             return 0
 
         edit = changes.change_set(base, new)
         n_dels, n_adds = changes.change_count(edit)
 
-        show_diff(old_lines, new_lines, f"{ctx.origin} (serial {base.soa[0].serial})", "edited")
+        show_diff(old_lines, new_lines, f"{opts.origin} (serial {base.soa[0].serial})", "edited")
         soa_note = ", SOA changed" if edit.soa_changed else ""
         print(f"\n{n_dels} delete, {n_adds} add{soa_note} in 1 atomic UPDATE.")
         warnings = changes.signal_warnings(base.records, new.records)
@@ -361,7 +402,7 @@ def session(ctx, args):
             a = ask("Send? [y]es / [N]o / [e]dit / [s]cript: ", {"y", "n", "e", "s"})
             if a != "s":
                 break
-            script, _, conflicts = rfc2136.make_script(ctx, edit)
+            script, _, conflicts = rfc2136.make_script(server, opts.origin, edit)
             print(script)
             if conflicts:
                 print(f"Warning: {soa_conflict_message(conflicts)} Sending would offer a rebase.")
@@ -371,23 +412,23 @@ def session(ctx, args):
             print("Nothing sent.")
             return 2
         if args.dry_run:
-            script, _, conflicts = rfc2136.make_script(ctx, edit)
+            script, _, conflicts = rfc2136.make_script(server, opts.origin, edit)
             print(script)
             if conflicts:
                 print(f"Warning: {soa_conflict_message(conflicts)} Sending would offer a rebase.")
             print("Nothing sent (--dry-run).")
-            hint(ctx, args, dry_run=True)
+            hint(files, args, dry_run=True)
             return 0
 
-        ops, sent_soa, conflicts = rfc2136.update_ops(ctx, edit)
+        ops, sent_soa, conflicts = rfc2136.update_ops(server, opts.origin, edit)
         if conflicts:
             ok, out, can_rebase = False, soa_conflict_message(conflicts), True
         else:
-            ok, out, can_rebase = rfc2136.send_update(ctx, ops)
+            ok, out, can_rebase = rfc2136.send_update(server, opts.origin, ops)
         if ok:
             if out:
                 print(out)
-            missing = verify(ctx, edit, sent_soa)
+            missing = verify(server, opts.origin, edit, sent_soa)
             if missing:
                 print(
                     "Update accepted, but could not be verified:\n  "
@@ -397,12 +438,12 @@ def session(ctx, args):
                 )
                 return 3
             print("Updated and verified.")
-            cleanup(ctx)
+            cleanup(files)
             return 0
         print(out, file=sys.stderr)
         if not can_rebase:
             return 2
         if ask("[r]ebase onto current zone / [a]bort? ", {"r", "a"}) != "r":
             return 2
-        base, conflicts = rebase(ctx, base, new)
+        base, conflicts = rebase(opts, server, files, base, new)
         need_edit = conflicts > 0  # conflicts -> straight to the editor, otherwise diff first
