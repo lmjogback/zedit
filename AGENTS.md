@@ -12,8 +12,10 @@ lists what the code doesn't tell you.
   With `ZEDIT_REQUIRE_INTEGRATION=1` (set in CI) a skip is a failure instead,
   and if named doesn't start, the end of its log is in the message.
 - To test with the oldest allowed dependency versions, as CI's `lowest` job
-  does, run
-  `uv run --isolated --python 3.10 --resolution lowest-direct pytest tests/test_logic.py`.
+  does, run the unit tests with
+  `uv run --isolated --python 3.10 --resolution lowest-direct pytest tests --ignore tests/test_integration.py`.
+- Unit tests are in `tests/test_MODULE.py`, one file per module of
+  `src/zedit`; helpers they share are in `tests/helpers.py`.
   Without `--isolated` it rewrites `uv.lock` and downgrades `.venv`; if that
   happened, `git restore uv.lock && uv sync --locked` puts both back.
 
