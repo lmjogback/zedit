@@ -6,6 +6,11 @@
   UPDATE itself with dnspython, signed with the same TSIG key it uses for the
   transfer. `--dry-run` and `[s]cript` still show the update as an `nsupdate`
   script, which can be sent by hand.
+- Verification after an update now has a total time limit, `--verify-timeout`
+  (default 120 seconds), transfers included. Before, each of its up to ten
+  transfers could take 120 seconds, so a server that stopped answering right
+  after the update kept zedit waiting for over 20 minutes. zedit also says
+  that the update was accepted before it starts verifying.
 - Fix: a key file with a secret that isn't base64 or an unknown algorithm,
   and a port outside 1-65535 (`-p 65536`), ended zedit with a traceback.
   They are now reported as errors; the key is checked when it is read.

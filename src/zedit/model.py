@@ -65,14 +65,18 @@ SOA_KEY = RRKey(dns.name.empty, SOA)
 APEX_NS = RRKey(dns.name.empty, NS)
 
 
+VERIFY_TIMEOUT = 120.0  # seconds, for all of the verification after an update
+
+
 @dataclass(frozen=True)
 class Options:
-    """The zone and how to show it, as the command line asks."""
+    """The zone, how to show it and how long to verify, as the command line asks."""
 
     origin: dns.name.Name
     show_all: bool = False  # -a, --no-rrsig
     no_rrsig: bool = False
     addresses: bool = False  # -A
+    verify_timeout: float = VERIFY_TIMEOUT  # --verify-timeout
 
 
 @dataclass(frozen=True)

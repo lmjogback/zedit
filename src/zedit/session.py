@@ -20,7 +20,7 @@ import dns.rdataset
 from zedit import changes, merge, zonefile
 from zedit.backend import Backend, Outcome, Preview
 from zedit.changes import ChangeSet
-from zedit.model import SOA_EDITABLE, SOA_KEY, Options, ZeditError, Zone, same, tname
+from zedit.model import SOA_EDITABLE, SOA_KEY, VERIFY_TIMEOUT, Options, ZeditError, Zone, same, tname
 
 
 @dataclass(frozen=True)
@@ -109,6 +109,7 @@ def verify(
     edit: ChangeSet,
     soa: dns.rdataset.Rdataset | None = None,
     attempts: int = 10,
+    timeout: float = VERIFY_TIMEOUT,
 ) -> list[str]:
     """Re-transfer the zone and check that every RRset the ChangeSet edit changes
     now matches it, and the SOA's MNAME and editable fields the SOA RRset sent (soa;
@@ -117,17 +118,22 @@ def verify(
     inline-signing the signed zone is updated asynchronously, hence the retries.
     A retry transfers the zone again only if its serial has moved since the last
     transfer, so a lasting mismatch in a large zone costs SOA queries, not AXFRs.
+    All of it, transfers included, takes at most timeout seconds.
     -> list of RRsets that don't match (empty on success)."""
-    bad, serial = [], None
+    deadline = time.monotonic() + timeout
+    bad: list[str] = []
+    serial = None
     for i in range(attempts):
         if i:
-            time.sleep(min(0.25 * 2 ** (i - 1), 2))
+            time.sleep(max(min(0.25 * 2 ** (i - 1), 2, deadline - time.monotonic()), 0))
+        if time.monotonic() >= deadline:
+            return [*bad, f"(verification stopped after {timeout:g} seconds)"]
         if serial is not None:
-            live = backend.current_soa(origin)
+            live = backend.current_soa(origin, timeout=deadline - time.monotonic())
             if live is not None and live[0].serial == serial:
                 continue  # the zone hasn't changed since the last transfer
         try:
-            after = backend.fetch(origin)
+            after = backend.fetch(origin, timeout=deadline - time.monotonic())
         except ZeditError as e:
             # The update was sent, so this is "not verified" (exit 3), not a plain error; retry
             bad, serial = [f"(zone transfer for verification failed: {e})"], None
@@ -241,6 +247,8 @@ def resume_command(args: argparse.Namespace, path: str) -> str:
         cmd.append("-a")
     if args.addresses:
         cmd.append("-A")
+    if args.verify_timeout != VERIFY_TIMEOUT:
+        cmd += ["--verify-timeout", f"{args.verify_timeout:g}"]
     return shlex.join([*cmd, "--resume", path, args.zone])
 
 
@@ -428,7 +436,8 @@ def send_and_verify(opts: Options, backend: Backend, files: SessionFiles, edit: 
     if result.outcome is Outcome.OK:
         if result.message:
             print(result.message)
-        missing = verify(backend, opts.origin, edit, result.soa)
+        print(f"Update accepted; verifying (up to {opts.verify_timeout:g} seconds)...", flush=True)
+        missing = verify(backend, opts.origin, edit, result.soa, timeout=opts.verify_timeout)
         if missing:
             print(
                 "Update accepted, but could not be verified:\n  "

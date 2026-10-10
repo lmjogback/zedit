@@ -43,12 +43,16 @@ class Backend(Protocol):
         """Names the server in messages and in the session file."""
         ...
 
-    def fetch(self, origin: dns.name.Name) -> Zone:
-        """The whole zone as it is now; raises ZeditError if it can't be read."""
+    def fetch(self, origin: dns.name.Name, timeout: float | None = None) -> Zone:
+        """The whole zone as it is now; raises ZeditError if it can't be read,
+        within timeout seconds if given."""
         ...
 
-    def current_soa(self, origin: dns.name.Name) -> dns.rdataset.Rdataset | None:
-        """The zone's SOA as it is now, cheaply, or None if it can't be read."""
+    def current_soa(
+        self, origin: dns.name.Name, timeout: float | None = None
+    ) -> dns.rdataset.Rdataset | None:
+        """The zone's SOA as it is now, cheaply, or None if it can't be read
+        (within timeout seconds if given)."""
         ...
 
     def preview(self, origin: dns.name.Name, edit: ChangeSet) -> Preview: ...

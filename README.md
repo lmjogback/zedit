@@ -67,6 +67,7 @@ zedit [-s SERVER] [-p PORT] [-k KEYFILE] [-a] [--no-rrsig] [-A] [-n] [-r FILE] z
 | `-a`, `--show-all` | Also show DNSSEC and server-maintained records, as read-only `;ro` comment lines |
 | `--no-rrsig` | With `--show-all`, leave out RRSIG, NSEC and NSEC3 (implies `-a`) |
 | `-A`, `--addresses` | In reverse zones, show owner names as IP addresses |
+| `--verify-timeout SECONDS` | After an update, give up verifying it after this long, transfers included (default 120) |
 | `-n`, `--dry-run` | Show the update as an `nsupdate` script, send nothing; the session is kept for `--resume` |
 | `-r`, `--resume FILE` | Resume a saved session (rebases onto the current zone) |
 
@@ -279,7 +280,10 @@ queries the SOA first and transfers again only if the serial has moved. BIND
 silently drops some updates, e.g. an add that violates the CNAME rule, an SOA
 with a non-greater serial, or TTLs above a `dnssec-policy` `max-zone-ttl`.
 Mismatches are listed and zedit exits with status 3, as it does if the zone
-can't be transferred again.
+can't be transferred again. All of it, transfers included, takes at most
+`--verify-timeout` seconds (default 120), so a server that stops answering
+right after accepting the update doesn't keep zedit waiting; it says that the
+update was accepted before it starts verifying.
 
 **Rebase.** On NXRRSET/YXRRSET (or a timeout) you can rebase. zedit does a
 new AXFR and merges per RRset:

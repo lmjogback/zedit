@@ -27,14 +27,15 @@ def verify_with(monkeypatch, results, serials=(), attempts=None):
     (then None: no answer)."""
     calls, live = iter(results), iter(serials)
 
-    def fetch(origin):
+    def fetch(origin, timeout=None):
         r = next(calls)
         if isinstance(r, Exception):
             raise r
         return r
 
     backend = SimpleNamespace(
-        fetch=fetch, current_soa=lambda origin: next((soa_rd(f"{n} 1 2 3 4") for n in live), None)
+        fetch=fetch,
+        current_soa=lambda origin, timeout=None: next((soa_rd(f"{n} 1 2 3 4") for n in live), None),
     )
     monkeypatch.setattr(session.time, "sleep", lambda s: None)
     base = zone("www A 192.0.2.10\n")
@@ -60,6 +61,29 @@ def test_verify_reports_failed_transfer(monkeypatch):
 def test_verify_retries_after_failed_transfer(monkeypatch):
     edited = zone("www A 192.0.2.11\n")
     assert verify_with(monkeypatch, [ZeditError("AXFR failed: timed out"), edited]) == []
+
+
+@pytest.mark.parametrize(("cost", "transfers"), [(None, 1), (25, 3)])
+def test_verify_stops_at_its_deadline(monkeypatch, cost, transfers):
+    """Every transfer fails after cost seconds (None: when its timeout runs
+    out). verify() gives each one only the time that is left, and stops at the
+    deadline instead of after ten full timeouts."""
+    now = [0.0]
+    timeouts = []
+
+    def fetch(origin, timeout=None):
+        timeouts.append(timeout)
+        now[0] += timeout if cost is None else min(cost, timeout)
+        raise ZeditError("AXFR failed: timed out")
+
+    monkeypatch.setattr(session.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(session.time, "sleep", lambda s: now.__setitem__(0, now[0] + s))
+    backend = SimpleNamespace(fetch=fetch, current_soa=lambda origin, timeout=None: None)
+    edit = changes.change_set(zone("www A 192.0.2.10\n"), zone("www A 192.0.2.11\n"))
+    bad = session.verify(backend, ORIGIN, edit, timeout=60)
+    assert now[0] == 60 and len(timeouts) == transfers and timeouts[0] == 60
+    assert bad[-1] == "(verification stopped after 60 seconds)"
+    assert "transfer for verification failed" in bad[0]
 
 
 def editor_session(monkeypatch, tmp_path, editor, answers):
@@ -91,12 +115,12 @@ def test_failing_editor_aborts_or_edits_again(monkeypatch, tmp_path):
 
 # Options resume_command() carries over, and those it deliberately doesn't (a
 # new session file replaces --resume; --dry-run is dropped)
-CARRIED = {"zone", "server", "port", "keyfile", "show_all", "no_rrsig", "addresses"}
+CARRIED = {"zone", "server", "port", "keyfile", "show_all", "no_rrsig", "addresses", "verify_timeout"}
 NOT_CARRIED = {"resume", "dry_run", "help", "version"}
 RESUME_ARGVS = [
     ["example.com"],
     ["-s", "ns1.example.net", "-p", "5353", "-k", "/keys/my admin.key", "-a", "-A", "-n", "example.com"],
-    ["--no-rrsig", "-r", "/old/session.zone", "2.0.192.in-addr.arpa"],
+    ["--no-rrsig", "-r", "/old/session.zone", "--verify-timeout", "30", "2.0.192.in-addr.arpa"],
 ]
 
 

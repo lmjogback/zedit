@@ -79,11 +79,13 @@ class Rfc2136Backend:
     keyring: Keyring | None = None
     keyname: dns.name.Name | None = None
 
-    def fetch(self, origin: dns.name.Name) -> Zone:
-        return fetch(self, origin)
+    def fetch(self, origin: dns.name.Name, timeout: float | None = None) -> Zone:
+        return fetch(self, origin, timeout)
 
-    def current_soa(self, origin: dns.name.Name) -> dns.rdataset.Rdataset | None:
-        return live_soa(self, origin)
+    def current_soa(
+        self, origin: dns.name.Name, timeout: float | None = None
+    ) -> dns.rdataset.Rdataset | None:
+        return live_soa(self, origin, timeout)
 
     def preview(self, origin: dns.name.Name, edit: ChangeSet) -> Preview:
         """The UPDATE as an nsupdate script."""
@@ -99,7 +101,11 @@ class Rfc2136Backend:
         return replace(result, soa=soa) if result.outcome is Outcome.OK else result
 
 
-def fetch(server: Rfc2136Backend, origin: dns.name.Name) -> Zone:
+AXFR_TIMEOUT = 120
+SOA_QUERY_TIMEOUT = 10
+
+
+def fetch(server: Rfc2136Backend, origin: dns.name.Name, timeout: float | None = None) -> Zone:
     try:
         xfr = dns.query.xfr(
             server.address,
@@ -107,7 +113,7 @@ def fetch(server: Rfc2136Backend, origin: dns.name.Name) -> Zone:
             port=server.port,
             keyring=server.keyring,
             keyname=server.keyname,
-            lifetime=120,
+            lifetime=AXFR_TIMEOUT if timeout is None else timeout,
         )
         zone = dns.zone.from_xfr(xfr, relativize=True)
     except QUERY_ERRORS as e:
@@ -178,7 +184,9 @@ def compute_prereqs(edit: ChangeSet, origin: dns.name.Name) -> list[Op]:
     return out
 
 
-def live_soa(server: Rfc2136Backend, origin: dns.name.Name) -> dns.rdataset.Rdataset | None:
+def live_soa(
+    server: Rfc2136Backend, origin: dns.name.Name, timeout: float | None = None
+) -> dns.rdataset.Rdataset | None:
     """The zone's SOA RRset as the server answers it now, or None if the query
     fails. With inline-signing it is the signed zone's SOA: its serial is normally
     >= the unsigned one, and its other fields are the same.
@@ -190,7 +198,8 @@ def live_soa(server: Rfc2136Backend, origin: dns.name.Name) -> dns.rdataset.Rdat
         q = dns.message.make_query(origin, dns.rdatatype.SOA)
         if server.keyring:
             q.use_tsig(server.keyring, keyname=server.keyname)
-        r = dns.query.tcp(q, server.address, port=server.port, timeout=10)
+        limit = SOA_QUERY_TIMEOUT if timeout is None else min(timeout, SOA_QUERY_TIMEOUT)
+        r = dns.query.tcp(q, server.address, port=server.port, timeout=limit)
         for rrset in r.answer:
             if rrset.rdtype == dns.rdatatype.SOA:
                 rd = rrset[0]
