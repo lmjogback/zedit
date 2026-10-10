@@ -1,5 +1,11 @@
 """Run zedit against a real named. Skipped if BIND is not installed, or if named
-doesn't start; with ZEDIT_REQUIRE_INTEGRATION set (as in CI), that fails instead."""
+doesn't start; with ZEDIT_REQUIRE_INTEGRATION set (as in CI), that fails instead.
+
+Each test starts its own named on a free port with a fresh zone (run_named(),
+or the server fixture for all three signing modes), and runs zedit as a user
+would: as a separate process, with a shell script as $EDITOR (write_editor())
+and the answers to its prompts on stdin. The zone is then checked with dig.
+"""
 
 import contextlib
 import datetime
@@ -21,6 +27,7 @@ SBIN = os.pathsep.join(["/usr/local/sbin", "/usr/sbin", "/sbin"])
 
 
 def find_tool(name):
+    """The path of a BIND tool, or None."""
     return shutil.which(name) or shutil.which(name, path=SBIN)
 
 
@@ -29,6 +36,7 @@ REQUIRED = bool(os.environ.get("ZEDIT_REQUIRE_INTEGRATION"))
 
 
 def skip(reason, **kwargs):
+    """Skip, or fail where the tests must run (see REQUIRED)."""
     if REQUIRED:
         pytest.fail(f"{reason} (ZEDIT_REQUIRE_INTEGRATION is set)", pytrace=False)
     pytest.skip(reason, **kwargs)
@@ -39,6 +47,9 @@ if missing := [name for name, path in TOOLS.items() if not path]:
     skip(f"not found: {', '.join(missing)}", allow_module_level=True)
 
 ZONE = "example.com"
+# The ways a zone can be served, as named.conf options: signing changes what a
+# transfer shows (RRSIGs, NSECs) and, with inline-signing, when an update
+# appears in it
 SIGNING = {
     "unsigned": "",
     "inline": "dnssec-policy default; inline-signing yes;",
@@ -61,7 +72,7 @@ def free_port():
 
 
 class DigError(Exception):
-    pass
+    """dig reported something other than answer records."""
 
 
 def dig_tsig(key):
@@ -100,9 +111,11 @@ def dig(port, key, *args):
 
 
 def axfr(port, key):
+    """The whole zone, as dig shows it."""
     return dig(port, key, ZONE, "AXFR")
 
 
+# The zone most tests start with
 FORWARD = "@ IN NS ns1\nns1 IN A 192.0.2.1\nwww IN A 192.0.2.10\nmail IN A 192.0.2.20\n"
 
 
@@ -159,6 +172,9 @@ zone "{zone}" {{ type primary; file "{tmp_path}/db.example"; {SIGNING[signing]} 
 
 @pytest.fixture(params=list(SIGNING))
 def server(request, tmp_path):
+    """named serving FORWARD as ZONE, once unsigned, once with inline-signing and
+    once signed in place: most tests run three times, since signing changes
+    what a transfer shows and when updates appear. -> (port, key, tmp_path)."""
     with run_named(tmp_path, request.param) as s:
         yield s
 
@@ -185,6 +201,9 @@ def run_zedit(port, key, tmp_path, editor, answers, *extra, zone=ZONE, env=None)
 
 
 def write_editor(tmp_path, body):
+    """An "editor" for zedit to run: a shell script with body, which gets the
+    session file as $1. Most tests edit it with sed; some also change the zone
+    on the server meanwhile (nsupdate()), as another admin might."""
     p = tmp_path / "ed.sh"
     p.write_text("#!/bin/sh\n" + body)
     p.chmod(0o755)
@@ -198,6 +217,7 @@ def nsupdate(key, port, *updates):
 
 
 def saved_files(tmp):
+    """The names of the session files left in the state directory."""
     d = tmp / "state" / "zedit"
     return os.listdir(d) if d.exists() else []
 
@@ -231,6 +251,9 @@ def test_failed_transfer_is_an_error(tmp_path, case, message):
 
 
 def test_unrelated_concurrent_change_does_not_conflict(server):
+    """While I edit www, the SOA and a new name, someone else adds dhcp1 and
+    changes mail. My UPDATE locks only what it touches, so it goes through
+    without a rebase, and both sets of changes end up in the zone."""
     port, key, tmp = server
     ed = write_editor(
         tmp,
@@ -261,6 +284,8 @@ def test_unrelated_concurrent_change_does_not_conflict(server):
 
 
 def test_overlapping_concurrent_change_rebases(server):
+    """Someone else changes www while I edit it: the server rejects my UPDATE
+    (NXRRSET), I choose [r]ebase, and both changes end up in the zone."""
     port, key, tmp = server
     ed = write_editor(
         tmp,
@@ -275,6 +300,8 @@ def test_overlapping_concurrent_change_rebases(server):
 
 
 def test_abort_then_resume(server):
+    """Like the previous test, but I abort instead of rebasing; --resume later
+    rebases and sends the saved edit, with an editor that changes nothing."""
     port, key, tmp = server
     ed = write_editor(
         tmp,
@@ -299,6 +326,8 @@ def test_abort_then_resume(server):
     ],
 )
 def test_aborted_edit_keeps_session_only_with_changes(tmp_path, body, kept):
+    """Aborting the editor keeps the session only if there is something in it
+    worth resuming: a change, or a file that doesn't parse (which may hold one)."""
     with run_named(tmp_path, "unsigned") as (port, key, tmp):
         r = run_zedit(port, key, tmp, write_editor(tmp, body), "a\n")
         assert r.returncode == 1, r.stdout + r.stderr
@@ -307,6 +336,7 @@ def test_aborted_edit_keeps_session_only_with_changes(tmp_path, body, kept):
 
 
 def test_declined_update_keeps_session(server):
+    """Answering no to Send? keeps both session files and sends nothing."""
     port, key, tmp = server
     ed = write_editor(tmp, "sed -i 's/192.0.2.10/192.0.2.12/' \"$1\"\n")
     r = run_zedit(port, key, tmp, ed, "n\n")
@@ -316,6 +346,8 @@ def test_declined_update_keeps_session(server):
 
 
 def test_dry_run_keeps_session_for_resume(server):
+    """--dry-run shows the nsupdate script and sends nothing; the printed
+    command then sends the same edit."""
     port, key, tmp = server
     ed = write_editor(tmp, "sed -i 's/192.0.2.10/192.0.2.12/' \"$1\"\n")
     r = run_zedit(port, key, tmp, ed, "y\n", "--dry-run")
@@ -346,6 +378,7 @@ def test_silently_ignored_update_is_reported(server):
 
 
 def soa(port, key):
+    """The zone's (serial, REFRESH) as the server has it."""
     (rr,) = dig(port, key, ZONE, "SOA")
     serial, refresh = rr.split()[6:8]
     return int(serial), int(refresh)
@@ -406,6 +439,9 @@ def test_summary_counts_records(server):
 
 
 def test_show_all_is_read_only(server):
+    """With -a, the read-only records are in the file, but deleting or changing
+    them there has no effect: only the www change is sent, and the DNSKEYs are
+    as before."""
     port, key, tmp = server
     signed = any(" DNSKEY " in rr for rr in axfr(port, key))
     # Save what the editor sees, change www, and tamper with every read-only line
@@ -425,6 +461,8 @@ def test_show_all_is_read_only(server):
 
 
 def test_default_keyfile_from_config(server):
+    """Without -k, the key is found in ~/.config/zedit/keys/ZONE.key, and zedit
+    says which key it uses."""
     port, key, tmp = server
     keys = tmp / "config" / "zedit" / "keys"
     keys.mkdir(parents=True)
@@ -454,6 +492,7 @@ def test_rfc2317_zone_with_slash(tmp_path):
 
 
 def test_generate_in_reverse_zone(tmp_path):
+    """$GENERATE with modifiers, end to end: three PTR records sent and in the zone."""
     zone = "2.0.192.in-addr.arpa"
     with run_named(tmp_path, "unsigned", zone=zone, records="@ IN NS ns1.example.net.\n") as (port, key, tmp):
         add = tmp / "add.txt"
@@ -495,6 +534,8 @@ def test_generate_in_reverse_zone(tmp_path):
     ],
 )
 def test_reverse_zone_in_address_form(tmp_path, zone, existing, shown_as, added, expected):
+    """With -A in IPv4, IPv6 and RFC 2317 reverse zones: the existing PTR is
+    shown as its address, and one added as an address lands on its name."""
     records = "@ IN NS ns1.example.net.\n" + existing
     with run_named(tmp_path, "unsigned", zone=zone, records=records) as (port, key, tmp):
         add = tmp / "add.txt"
@@ -577,6 +618,7 @@ def concurrent_soa(key, port, fields, mname="ns1.example.net.", ttl=3600):
 
 
 def soa_fields(port, key):
+    """The zone's SOA timers as the server has them."""
     (rr,) = dig(port, key, ZONE, "SOA")
     return rr.split()[7:]  # REFRESH RETRY EXPIRE MINIMUM
 
