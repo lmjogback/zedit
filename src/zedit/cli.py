@@ -9,7 +9,7 @@ import dns.exception
 import dns.name
 
 from zedit import __version__, rfc2136, session
-from zedit.model import IDNA, Options, ZeditError
+from zedit.model import IDNA, VERIFY_TIMEOUT, Options, ZeditError
 
 
 def config_dir() -> str:
@@ -47,6 +47,17 @@ def port(text: str) -> int:
     return n
 
 
+def seconds(text: str) -> float:
+    """An argparse type: a positive number of seconds."""
+    try:
+        n = float(text)
+    except ValueError:
+        n = 0
+    if not 0 < n < float("inf"):
+        raise argparse.ArgumentTypeError(f"{text!r} is not a positive number of seconds")
+    return n
+
+
 def make_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="zedit", description="Edit a dynamic DNS zone via AXFR + $EDITOR + DNS UPDATE"
@@ -78,6 +89,13 @@ def make_parser() -> argparse.ArgumentParser:
         help="in reverse zones, show owner names as IP addresses (input in address form always works)",
     )
     ap.add_argument(
+        "--verify-timeout",
+        type=seconds,
+        default=VERIFY_TIMEOUT,
+        metavar="SECONDS",
+        help=f"after an update, give up verifying it after this long (default: {VERIFY_TIMEOUT:g})",
+    )
+    ap.add_argument(
         "-n", "--dry-run", action="store_true", help="show the update as an nsupdate script, send nothing"
     )
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
@@ -99,7 +117,7 @@ def setup(args: argparse.Namespace) -> tuple[Options, rfc2136.Rfc2136Backend]:
     label = address if host.rstrip(".") == address else f"{host.rstrip('.')} ({address})"
     keyring, keyname = rfc2136.load_bind_key(keyfile) if keyfile else (None, None)
     server = rfc2136.Rfc2136Backend(address, args.port, label, keyring, keyname)
-    opts = Options(origin, args.show_all or args.no_rrsig, args.no_rrsig, args.addresses)
+    opts = Options(origin, args.show_all or args.no_rrsig, args.no_rrsig, args.addresses, args.verify_timeout)
     if not args.server or not args.keyfile:
         print(f"Server: {label}  Key: {keyfile or 'none'}", file=sys.stderr)
     return opts, server
