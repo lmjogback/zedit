@@ -19,10 +19,11 @@ Error handling:
   Aborted/failed sessions are resumed with --resume FILE.
 
 Modules:
-  cli (command line) -> session (files, editor, prompts, main loop) ->
-  rfc2136 (the server: AXFR, SOA query, UPDATE), changes (SOA and warnings),
-  merge (three-way merge), zonefile (parse and render) -> reverse (address
-  owners) and model (shared constants and helpers).
+  cli (command line) -> session (files, editor, prompts, main loop), which
+  reaches the server only through backend.Backend; rfc2136 implements it (AXFR,
+  SOA query, UPDATE). changes (the ChangeSet a backend applies, SOA, warnings),
+  merge (three-way merge) and zonefile (parse and render) -> reverse (address
+  owners) and model (types and constants).
 
 Requires: python >= 3.10, dnspython >= 2.4.
 """
