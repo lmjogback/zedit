@@ -4,13 +4,15 @@ import shutil
 import socket
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import dns.exception
 import dns.name
 import dns.zone
 import pytest
 
-from zedit import cli
+from zedit import changes, cli, merge, reverse, rfc2136, session, zonefile
+from zedit.model import ZeditError, same, tname
 
 ORIGIN = dns.name.from_text("example.com.")
 SOA = "@ 3600 IN SOA ns1 hostmaster 100 7200 900 1209600 300\n"
@@ -18,7 +20,7 @@ SOA = "@ 3600 IN SOA ns1 hostmaster 100 7200 900 1209600 300\n"
 
 def model(body, soa=SOA):
     z = dns.zone.from_text("$TTL 300\n" + soa + body, origin=ORIGIN, relativize=True, check_origin=False)
-    m, s, rejected = cli.to_model(z)
+    m, s, rejected = zonefile.to_model(z)
     return m, s, rejected
 
 
@@ -38,13 +40,13 @@ def test_dnssec_types_filtered():
 
 def lines(ops):
     """Ops as the nsupdate commands zedit shows."""
-    return [line for op in ops for line in cli.op_lines(op, ORIGIN)]
+    return [line for op in ops for line in rfc2136.op_lines(op, ORIGIN)]
 
 
 def test_compute_update_minimal_and_ordered():
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\nfoo A 192.0.2.9\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nfoo CNAME www\n")
-    dels, adds, final = cli.compute_update(old, new, ORIGIN)
+    dels, adds, final = rfc2136.compute_update(old, new, ORIGIN)
     assert lines(dels) == [
         "update delete foo.example.com. IN A",
         "update delete www.example.com. IN A 192.0.2.2",
@@ -58,7 +60,7 @@ def test_compute_update_minimal_and_ordered():
 def test_ttl_change_replaces_rrset():
     old, _, _ = model("www 300 A 192.0.2.1\n")
     new, _, _ = model("www 60 A 192.0.2.1\n")
-    dels, adds, final = cli.compute_update(old, new, ORIGIN)
+    dels, adds, final = rfc2136.compute_update(old, new, ORIGIN)
     assert lines(dels) == ["update delete www.example.com. IN A"]
     assert lines(adds) == ["update add www.example.com. 60 IN A 192.0.2.1"]
     assert final == []
@@ -76,10 +78,10 @@ def test_change_count_counts_records_as_the_diff_shows_them():
         "tens 60 A 127.0.0.10\ntens 60 A 127.0.0.11\ntens 60 A 127.0.0.12\n"
     )
     # deleted: mx, ttl x2 (new TTL), twenties x3; added: www, mx, ttl x2, tens x3
-    assert cli.change_count(old, new) == (6, 7)
-    assert cli.change_count(old, old) == (0, 0)
-    old_lines, new_lines = cli.rr_lines(old, ORIGIN), cli.rr_lines(new, ORIGIN)
-    assert cli.change_count(old, new) == (
+    assert changes.change_count(old, new) == (6, 7)
+    assert changes.change_count(old, old) == (0, 0)
+    old_lines, new_lines = zonefile.rr_lines(old, ORIGIN), zonefile.rr_lines(new, ORIGIN)
+    assert changes.change_count(old, new) == (
         len(set(old_lines) - set(new_lines)),
         len(set(new_lines) - set(old_lines)),
     )
@@ -99,26 +101,26 @@ def test_apex_ns_added_before_deleted(old_ns, new_ns, adds, final):
     one by one, never the whole RRset."""
     old, _, _ = model(old_ns)
     new, _, _ = model(new_ns)
-    d, a, f = cli.compute_update(old, new, ORIGIN)
+    d, a, f = rfc2136.compute_update(old, new, ORIGIN)
     assert d == []
     assert [x.removeprefix("update add example.com. ") for x in lines(a)] == adds
     assert [x.removeprefix("update delete example.com. ") for x in lines(f)] == final
     # update_ops() puts the final deletes last
-    ctx = cli.SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53)
+    ctx = SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53)
     _, soa, _ = model("")
-    ops, _, _ = cli.update_ops(ctx, soa, soa, [], d, a, f)
-    script = cli.script_text(ctx.server, ctx.port, ORIGIN, ops)
+    ops, _, _ = rfc2136.update_ops(ctx, soa, soa, [], d, a, f)
+    script = rfc2136.script_text(ctx.server, ctx.port, ORIGIN, ops)
     assert all(script.index(x) < script.index(y) for x in lines(a) for y in lines(f))
 
 
 def test_soa_update_bumps_serial_and_wraps():
     _, old, _ = model("", soa="@ 3600 IN SOA ns1 hm 4294967295 7200 900 1209600 300\n")
     _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 4294967295 7200 900 1209600 60\n")
-    soa, conflicts = cli.soa_to_send(old, new, old)
-    (line,) = lines(cli.soa_update(soa, ORIGIN))
+    soa, conflicts = changes.soa_to_send(old, new, old)
+    (line,) = lines(rfc2136.soa_update(soa, ORIGIN))
     assert " 0 7200 900 1209600 60" in line and conflicts == []
-    assert cli.soa_to_send(old, old, None) == (None, [])
-    assert cli.soa_update(None, ORIGIN) == []
+    assert changes.soa_to_send(old, old, None) == (None, [])
+    assert rfc2136.soa_update(None, ORIGIN) == []
 
 
 def test_locked_soa_fields(tmp_path):
@@ -126,10 +128,10 @@ def test_locked_soa_fields(tmp_path):
     f = tmp_path / "z.zone"
     f.write_text("$TTL 300\n@ 3600 IN SOA ns2 hostmaster 101 7200 900 1209600 300\n")
     with pytest.raises(ValueError, match="MNAME, SERIAL"):
-        cli.parse_file(str(f), ORIGIN, base_soa)
+        zonefile.parse_file(str(f), ORIGIN, base_soa)
     f.write_text("$TTL 300\n@ 60 IN SOA ns1 hostmaster 100 7200 900 1209600 300\n")
     with pytest.raises(ValueError, match="TTL"):
-        cli.parse_file(str(f), ORIGIN, base_soa)
+        zonefile.parse_file(str(f), ORIGIN, base_soa)
 
 
 def test_cname_conflict_rejected(tmp_path):
@@ -138,19 +140,19 @@ def test_cname_conflict_rejected(tmp_path):
     f = tmp_path / "z.zone"
     f.write_text("$TTL 300\n" + SOA + "foo CNAME www\nfoo TXT x\n")
     with pytest.raises(dns.exception.DNSException):
-        cli.parse_file(str(f), ORIGIN, base_soa)
+        zonefile.parse_file(str(f), ORIGIN, base_soa)
     # ... and in the model, e.g. after a merge
     a, _, _ = model("foo CNAME www\n")
     b, _, _ = model("foo TXT x\n")
     with pytest.raises(ValueError, match="CNAME"):
-        cli.check_cname({**a, **b})
+        zonefile.check_cname({**a, **b})
 
 
 def test_merge_disjoint_changes():
     base, _, _ = model("a A 192.0.2.1\nb A 192.0.2.2\n")
     mine, _, _ = model("a A 192.0.2.11\nb A 192.0.2.2\n")
     theirs, _, _ = model("a A 192.0.2.1\nb A 192.0.2.22\nc A 192.0.2.3\n")
-    merged, notes, dropped, conflicts = cli.merge3(base, mine, theirs)
+    merged, notes, dropped, conflicts = merge.merge3(base, mine, theirs)
     assert addrs(merged, "a") == ["192.0.2.11"]
     assert addrs(merged, "b") == ["192.0.2.22"]
     assert addrs(merged, "c") == ["192.0.2.3"]
@@ -161,7 +163,7 @@ def test_merge_same_rrset_both_sides_with_ttl_conflict():
     base, _, _ = model("www 300 A 192.0.2.11\n")
     mine, _, _ = model("www 60 A 192.0.2.12\n")
     theirs, _, _ = model("www 900 A 192.0.2.11\nwww 900 A 192.0.2.13\n")
-    merged, notes, _, conflicts = cli.merge3(base, mine, theirs)
+    merged, notes, _, conflicts = merge.merge3(base, mine, theirs)
     assert addrs(merged, "www") == ["192.0.2.12", "192.0.2.13"]
     assert merged[key("www", "A")].ttl == 60
     assert conflicts == 1 and key("www", "A") in notes
@@ -170,7 +172,7 @@ def test_merge_same_rrset_both_sides_with_ttl_conflict():
 def test_merge_already_applied_is_noop():
     base, _, _ = model("a A 192.0.2.1\n")
     mine, _, _ = model("a A 192.0.2.2\n")
-    merged, notes, _, conflicts = cli.merge3(base, mine, mine)
+    merged, notes, _, conflicts = merge.merge3(base, mine, mine)
     assert addrs(merged, "a") == ["192.0.2.2"] and not notes and not conflicts
 
 
@@ -178,7 +180,7 @@ def test_merge_soa_fieldwise():
     _, b, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 300\n")
     _, m, _ = model("", soa="@ 3600 IN SOA ns1 admin 100 7200 900 1209600 300\n")
     _, t, _ = model("", soa="@ 3600 IN SOA ns1 hm 105 3600 900 1209600 300\n")
-    soa, note, conflicts = cli.merge_soa(b, m, t)
+    soa, note, conflicts = merge.merge_soa(b, m, t)
     r = soa[0]
     assert (str(r.rname), r.refresh, r.serial, conflicts) == ("admin", 3600, 105, 0)
 
@@ -186,7 +188,7 @@ def test_merge_soa_fieldwise():
 def test_prereqs_only_on_touched_rrsets():
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\nmail A 192.0.2.9\ngone TXT x\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nmail A 192.0.2.9\nnew A 192.0.2.4\n")
-    assert sorted(lines(cli.compute_prereqs(old, new, ORIGIN))) == [
+    assert sorted(lines(rfc2136.compute_prereqs(old, new, ORIGIN))) == [
         "prereq nxrrset new.example.com. IN A",
         'prereq yxrrset gone.example.com. IN TXT "x"',
         "prereq yxrrset www.example.com. IN A 192.0.2.1",
@@ -195,16 +197,16 @@ def test_prereqs_only_on_touched_rrsets():
 
 
 def test_serial_max_rfc1982():
-    assert cli.serial_max(100, None) == 100
-    assert cli.serial_max(100, 105) == 105
-    assert cli.serial_max(105, 100) == 105
-    assert cli.serial_max(4294967290, 3) == 3  # wrapped, 3 is "greater"
+    assert changes.serial_max(100, None) == 100
+    assert changes.serial_max(100, 105) == 105
+    assert changes.serial_max(105, 100) == 105
+    assert changes.serial_max(4294967290, 3) == 3  # wrapped, 3 is "greater"
 
 
 def test_soa_update_uses_live_serial():
     _, old, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 300\n")
     _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 60\n")
-    soa, _ = cli.soa_to_send(old, new, soa_rd("117 7200 900 1209600 300"))
+    soa, _ = changes.soa_to_send(old, new, soa_rd("117 7200 900 1209600 300"))
     assert soa[0].serial == 118
 
 
@@ -218,7 +220,7 @@ def test_soa_keeps_concurrent_changes_to_other_fields():
     Both survive, instead of mine overwriting the server's REFRESH."""
     base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
     live = soa_rd("105 3600 900 1209600 300")
-    soa, conflicts = cli.soa_to_send(base, mine, live)
+    soa, conflicts = changes.soa_to_send(base, mine, live)
     assert (soa[0].serial, soa[0].refresh, soa[0].minimum, conflicts) == (106, 3600, 60, [])
 
 
@@ -228,9 +230,9 @@ def test_soa_keeps_concurrent_changes_to_locked_fields():
     transferred ones."""
     base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
     _, live, _ = model("", soa="@ 7200 IN SOA ns2 hm 105 7200 900 1209600 300\n")
-    soa, conflicts = cli.soa_to_send(base, mine, live)
+    soa, conflicts = changes.soa_to_send(base, mine, live)
     assert (str(soa[0].mname), soa.ttl, soa[0].minimum, conflicts) == ("ns2", 7200, 60, [])
-    (line,) = lines(cli.soa_update(soa, ORIGIN))
+    (line,) = lines(rfc2136.soa_update(soa, ORIGIN))
     assert line == (
         "update add example.com. 7200 IN SOA ns2.example.com. hm.example.com. 106 7200 900 1209600 60"
     )
@@ -239,14 +241,14 @@ def test_soa_keeps_concurrent_changes_to_locked_fields():
 def test_soa_conflict_on_the_same_field():
     base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
     live = soa_rd("105 7200 900 1209600 120")
-    _, conflicts = cli.soa_to_send(base, mine, live)
+    _, conflicts = changes.soa_to_send(base, mine, live)
     assert conflicts == ["MINIMUM"]
 
 
 def test_soa_not_sent_blind():
     base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
-    with pytest.raises(cli.ZeditError, match="current SOA"):
-        cli.soa_to_send(base, mine, None)
+    with pytest.raises(ZeditError, match="current SOA"):
+        changes.soa_to_send(base, mine, None)
 
 
 SIGNED = (
@@ -263,7 +265,7 @@ SIGNED = (
 
 def test_show_all_renders_read_only_and_round_trips():
     m, soa, hidden = model(SIGNED)
-    text = cli.render_file(soa, m, ORIGIN, "x", hidden=hidden)
+    text = zonefile.render_file(soa, m, ORIGIN, "x", hidden=hidden)
     ro = [line for line in text.splitlines() if line.startswith(";ro ")]
     assert len(ro) == 6  # RRSIG NS, DNSKEY, RRSIG DNSKEY, TYPE65534, RRSIG A, NSEC
     lines = text.splitlines()
@@ -273,15 +275,15 @@ def test_show_all_renders_read_only_and_round_trips():
     k = next(i for i, x in enumerate(lines) if " DNSKEY " in x)
     assert " RRSIG  DNSKEY " in lines[k + 1]
     # Read-only lines are comments: parsing the file yields exactly the editable model
-    m2, soa2 = cli.parse_text(text, ORIGIN)
-    assert set(m2) == set(m) and all(cli.same(m[x], m2[x]) for x in m)
+    m2, soa2 = zonefile.parse_text(text, ORIGIN)
+    assert set(m2) == set(m) and all(same(m[x], m2[x]) for x in m)
 
 
 def test_no_rrsig_keeps_keys_drops_noise():
     _, _, hidden = model(SIGNED)
-    ctx = cli.SimpleNamespace(show_all=True, no_rrsig=True)
-    assert sorted(cli.tname(k[1]) for k in cli.shown(ctx, hidden)) == ["DNSKEY", "TYPE65534"]
-    assert cli.shown(cli.SimpleNamespace(show_all=False, no_rrsig=False), hidden) is None
+    ctx = SimpleNamespace(show_all=True, no_rrsig=True)
+    assert sorted(tname(k[1]) for k in zonefile.shown(ctx, hidden)) == ["DNSKEY", "TYPE65534"]
+    assert zonefile.shown(SimpleNamespace(show_all=False, no_rrsig=False), hidden) is None
 
 
 def test_find_keyfile_order(tmp_path, monkeypatch):
@@ -302,8 +304,8 @@ def test_find_keyfile_order(tmp_path, monkeypatch):
 
 def test_primary_from_mname(monkeypatch):
     _, soa, _ = model("", soa="@ 3600 IN SOA ns1.example.net. hm 1 2 3 4 5\n")
-    monkeypatch.setattr(cli.dns.resolver, "resolve", lambda *a, **kw: soa)
-    assert cli.primary_from_mname(ORIGIN) == "ns1.example.net."
+    monkeypatch.setattr(rfc2136.dns.resolver, "resolve", lambda *a, **kw: soa)
+    assert rfc2136.primary_from_mname(ORIGIN) == "ns1.example.net."
 
 
 @pytest.mark.parametrize(
@@ -319,21 +321,24 @@ def test_primary_from_mname(monkeypatch):
     ],
 )
 def test_human_duration(seconds, text):
-    assert cli.human_duration(seconds) == text
+    assert zonefile.human_duration(seconds) == text
 
 
 def test_rname_to_email():
-    assert cli.rname_to_email(dns.name.from_text("hostmaster", None), ORIGIN) == "hostmaster@example.com"
-    assert cli.rname_to_email(dns.name.from_text(r"john\.doe.example.net."), ORIGIN) == "john.doe@example.net"
+    assert zonefile.rname_to_email(dns.name.from_text("hostmaster", None), ORIGIN) == "hostmaster@example.com"
+    assert (
+        zonefile.rname_to_email(dns.name.from_text(r"john\.doe.example.net."), ORIGIN)
+        == "john.doe@example.net"
+    )
 
 
 def test_soa_help_is_comment_only():
     m, soa, _ = model("www A 192.0.2.1\n", soa="@ 3600 IN SOA ns1 hostmaster 100 86401 900 1209600 300\n")
-    text = cli.render_file(soa, m, ORIGIN, "x")
+    text = zonefile.render_file(soa, m, ORIGIN, "x")
     assert ";   REFRESH = 86401" in text and "(1 day and 1 second)" in text
     assert ";   EXPIRE  = 1209600" in text and "(2 weeks)" in text
     assert "contact: hostmaster@example.com" in text
-    m2, soa2 = cli.parse_text(text, ORIGIN)
+    m2, soa2 = zonefile.parse_text(text, ORIGIN)
     assert soa2[0] == soa[0] and set(m2) == set(m)
 
 
@@ -341,21 +346,23 @@ def test_rname_control_characters_stay_in_the_comment():
     rname = r"x\010evil\032TXT\032\034injected\034\013\226\128\168"
     soa = f"@ 3600 IN SOA ns1 {rname} 100 7200 900 1209600 300\n"
     m, soa_rds, _ = model("www A 192.0.2.1\n", soa=soa)
-    text = cli.render_file(soa_rds, m, ORIGIN, "x")
+    text = zonefile.render_file(soa_rds, m, ORIGIN, "x")
     assert 'contact: x\\010evil TXT "injected"\\013\\226\\128\\168@example.com' in text  # U+2028 too
-    m2, soa2 = cli.parse_text(text, ORIGIN)
+    m2, soa2 = zonefile.parse_text(text, ORIGIN)
     assert soa2[0] == soa_rds[0] and set(m2) == set(m)
 
 
 def test_file_stem_is_a_safe_file_name():
-    assert cli.file_stem(dns.name.from_text("Example.COM.")) == "example.com"
-    assert cli.file_stem(dns.name.from_text("16/28.2.0.192.in-addr.arpa.")) == "16_28.2.0.192.in-addr.arpa"
+    assert session.file_stem(dns.name.from_text("Example.COM.")) == "example.com"
+    assert (
+        session.file_stem(dns.name.from_text("16/28.2.0.192.in-addr.arpa.")) == "16_28.2.0.192.in-addr.arpa"
+    )
 
 
 def test_origin_directive_inside_zone():
     o = dns.name.from_text("2.0.192.in-addr.arpa.")
     text = "$TTL 300\n" + SOA + "$ORIGIN 2.0.192.in-addr.arpa.\n10 PTR www.example.com.\n"
-    m, _ = cli.parse_text(text, o)
+    m, _ = zonefile.parse_text(text, o)
     assert set(m) == {(dns.name.from_text("10", None), int(dns.rdatatype.PTR))}
 
 
@@ -363,14 +370,14 @@ def test_names_outside_zone_are_rejected_not_dropped():
     # dnspython's reader would silently drop these
     text = "$TTL 300\n" + SOA + "www A 192.0.2.1\n$ORIGIN example.org.\nfoo A 192.0.2.2\n"
     with pytest.raises(ValueError, match="foo.example.org"):
-        cli.parse_text(text, ORIGIN)
+        zonefile.parse_text(text, ORIGIN)
 
 
 REV = dns.name.from_text("2.0.192.in-addr.arpa.")
 
 
 def generated(line):
-    text, _ = cli.expand_generate(line)
+    text, _ = zonefile.expand_generate(line)
     return text.split("\n")
 
 
@@ -388,7 +395,7 @@ def generated(line):
     ],
 )
 def test_generate_substitute_like_bind(template, i, expected):
-    assert cli.generate_substitute(template, i) == expected
+    assert zonefile.generate_substitute(template, i) == expected
 
 
 def test_generate_range_and_step():
@@ -415,19 +422,19 @@ def test_generate_leaves_the_comment_alone():
 )
 def test_generate_errors(line, match):
     with pytest.raises(ValueError, match=match):
-        cli.expand_generate(line)
+        zonefile.expand_generate(line)
 
 
 def test_generate_errors_point_at_the_users_line():
     text = "$TTL 300\n" + SOA + "$GENERATE 1-50 $ PTR h$.example.com.\nbad line here\n"
     with pytest.raises(ValueError, match="^line 4:"):
-        cli.parse_text(text, REV)
+        zonefile.parse_text(text, REV)
 
 
 def test_generate_outside_zone_is_rejected():
     text = "$TTL 300\n" + SOA + "$ORIGIN example.org.\n$GENERATE 1-3 h$ A 192.0.2.$\n"
     with pytest.raises(ValueError, match="h1.example.org.*h2.example.org.*h3.example.org"):
-        cli.parse_text(text, REV)
+        zonefile.parse_text(text, REV)
 
 
 NAMED_CHECKZONE = shutil.which("named-checkzone") or shutil.which(
@@ -454,11 +461,11 @@ def test_generate_matches_named_checkzone(tmp_path):
         name, _ttl, cls, rtype, rdata = line.split(None, 4)
         if rtype not in ("SOA", "NS"):
             bind.add(f"{name} {cls} {rtype} {rdata}")
-    m, _ = cli.parse_text(zone, REV)
+    m, _ = zonefile.parse_text(zone, REV)
     ours = {
-        f"{n.derelativize(REV)} IN {cli.tname(t)} {rd.to_text(origin=REV, relativize=False)}"
+        f"{n.derelativize(REV)} IN {tname(t)} {rd.to_text(origin=REV, relativize=False)}"
         for (n, t), rds in m.items()
-        if cli.tname(t) != "NS"
+        if tname(t) != "NS"
         for rd in rds
     }
     assert len(bind) == 18 and ours == bind
@@ -471,7 +478,7 @@ V6_NAME_1 = "1." + "0." * 23 + "8.b.d.0.1.0.0.2.ip6.arpa."
 
 
 def owners(text, origin):
-    m, _ = cli.parse_text("$TTL 300\n" + SOA + text, origin)
+    m, _ = zonefile.parse_text("$TTL 300\n" + SOA + text, origin)
     return {k[0].derelativize(origin).to_text() for k in m}
 
 
@@ -490,9 +497,9 @@ def owners(text, origin):
 )
 def test_address_owner_round_trip(zone, owner, name):
     origin = dns.name.from_text(zone)
-    assert cli.owner_to_name(owner, origin) == name
-    canonical = str(cli.ipaddress.ip_address(owner))
-    assert cli.name_to_address(dns.name.from_text(name), origin) == canonical
+    assert reverse.owner_to_name(owner, origin) == name
+    canonical = str(reverse.ipaddress.ip_address(owner))
+    assert reverse.name_to_address(dns.name.from_text(name), origin) == canonical
 
 
 def test_address_owners_in_a_reverse_zone():
@@ -545,7 +552,7 @@ IP6_48 = dns.name.from_text("0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.")  # 2001:db8::/4
 @pytest.mark.parametrize("owner", ["0.5.0.0", "0.0.0.0", "1.2.3.4", "a.b.c.d", "f", "0.5"])
 def test_nibble_names_in_ip6_zones_are_not_ipv4(owner):
     # In ip6.arpa, 0.5.0.0 is a nibble name (here the /64 2001:db8:0:500::/64)
-    assert cli.owner_to_name(owner, IP6_48) is None
+    assert reverse.owner_to_name(owner, IP6_48) is None
     assert owners(f"{owner} NS ns1.example.net.\n", IP6_48) == {f"{owner}.{IP6_48}"}
 
 
@@ -574,7 +581,7 @@ def test_ipv4_in_an_ip6_zone_is_still_rejected():
 
 def test_no_rewriting_in_in_addr_arpa_itself():
     origin = dns.name.from_text("in-addr.arpa.")
-    assert cli.owner_to_name("10.2.0.192", origin) is None
+    assert reverse.owner_to_name("10.2.0.192", origin) is None
 
 
 def test_no_addresses_shown_in_in_addr_arpa_itself():
@@ -586,15 +593,15 @@ def test_no_addresses_shown_in_in_addr_arpa_itself():
         origin=origin,
         relativize=True,
     )
-    m, soa, _ = cli.to_model(z)
-    text = cli.render_file(soa, m, origin, "x", addresses=True)
+    m, soa, _ = zonefile.to_model(z)
+    text = zonefile.render_file(soa, m, origin, "x", addresses=True)
     assert "192.0.2.10 " not in text and "converted to reverse names" not in text
-    m2, _ = cli.parse_text(text, origin)
+    m2, _ = zonefile.parse_text(text, origin)
     assert set(m2) == set(m)
 
 
 def test_continuation_lines_are_not_owners():
-    m, _ = cli.parse_text("$TTL 300\n" + SOA + '10 TXT ( "first"\n192.0.2.99 )\n', REV)
+    m, _ = zonefile.parse_text("$TTL 300\n" + SOA + '10 TXT ( "first"\n192.0.2.99 )\n', REV)
     ((key, rds),) = m.items()
     assert key[0].to_text() == "10" and rds[0].to_text() == '"first" "192.0.2.99"'
 
@@ -618,19 +625,21 @@ def test_show_addresses_renders_and_round_trips():
         origin=REV,
         relativize=True,
     )
-    m, soa, _ = cli.to_model(z)
-    text = cli.render_file(soa, m, REV, "x", addresses=True)
+    m, soa, _ = zonefile.to_model(z)
+    text = zonefile.render_file(soa, m, REV, "x", addresses=True)
     records = [line.split()[0] for line in text.splitlines() if " PTR " in line]
     assert records == ["192.0.2.2", "192.0.2.10", "192.0.2.100"]  # numeric order
     assert any(line.startswith("@ ") and " NS " in line for line in text.splitlines())  # apex stays @
-    m2, _ = cli.parse_text(text, REV)
+    m2, _ = zonefile.parse_text(text, REV)
     assert set(m2) == set(m)
 
 
 def test_show_addresses_ipv6_compressed():
     m = {(dns.name.from_text(V6_NAME_1).relativize(V6), 12): None}
-    assert cli.owner_text(next(iter(m))[0], V6, True) == "2001:db8::1"
-    assert cli.owner_text(next(iter(m))[0], V6, False) == V6_NAME_1.replace(".8.b.d.0.1.0.0.2.ip6.arpa.", "")
+    assert zonefile.owner_text(next(iter(m))[0], V6, True) == "2001:db8::1"
+    assert zonefile.owner_text(next(iter(m))[0], V6, False) == V6_NAME_1.replace(
+        ".8.b.d.0.1.0.0.2.ip6.arpa.", ""
+    )
 
 
 @pytest.mark.parametrize(
@@ -651,12 +660,12 @@ def test_show_addresses_ipv6_compressed():
 )
 def test_malformed_address_owners(owner, match):
     with pytest.raises(ValueError, match=match):
-        cli.owner_to_name(owner, V6)
+        reverse.owner_to_name(owner, V6)
 
 
 @pytest.mark.parametrize("owner", ["16/28", "17.16/28", "0-127", "10", "10.2"])
 def test_rfc2317_and_relative_names_are_not_addresses(owner):
-    assert cli.owner_to_name(owner, REV) is None
+    assert reverse.owner_to_name(owner, REV) is None
 
 
 @pytest.mark.parametrize(
@@ -669,14 +678,14 @@ def test_rfc2317_and_relative_names_are_not_addresses(owner):
     ],
 )
 def test_ipv6_spellings_give_the_same_name(owner):
-    assert cli.owner_to_name(owner, V6) == V6_NAME_1
+    assert reverse.owner_to_name(owner, V6) == V6_NAME_1
 
 
 def test_ipv6_with_embedded_ipv4_notation():
     # 2001:db8::192.0.2.1 is 2001:db8::c000:201
-    name = cli.owner_to_name("2001:db8::192.0.2.1", V6)
+    name = reverse.owner_to_name("2001:db8::192.0.2.1", V6)
     assert name.startswith("1.0.2.0.0.0.0.c.") and name.endswith(".8.b.d.0.1.0.0.2.ip6.arpa.")
-    assert cli.name_to_address(dns.name.from_text(name), V6) == "2001:db8::c000:201"
+    assert reverse.name_to_address(dns.name.from_text(name), V6) == "2001:db8::c000:201"
 
 
 def test_ipv4_mapped_address_outside_the_zone():
@@ -712,11 +721,11 @@ def sweep_tokens():
 def sweep_expected(token, origin):
     """The rules, stated independently of the implementation."""
     labels = token.split(".")
-    if not cli.is_reverse(origin) or len(labels) != 4 or not all(x.isdigit() for x in labels):
+    if not reverse.is_reverse(origin) or len(labels) != 4 or not all(x.isdigit() for x in labels):
         return "name"  # only a decimal dotted quad in a reverse zone can be IPv4
-    if origin == cli.IN_ADDR:
+    if origin == reverse.IN_ADDR:
         return "name"  # four labels are a valid name directly under in-addr.arpa
-    if origin.is_subdomain(cli.IP6_ARPA) and all(len(x) == 1 for x in labels):
+    if origin.is_subdomain(reverse.IP6_ARPA) and all(len(x) == 1 for x in labels):
         return "name"  # nibbles
     if all(str(int(x)) == x and int(x) <= 255 for x in labels):
         return "address"
@@ -726,23 +735,25 @@ def sweep_expected(token, origin):
 @pytest.mark.parametrize("zone", SWEEP_ZONES)
 def test_owner_sweep(zone):
     origin = dns.name.from_text(zone)
-    rtype = "PTR x.example.com." if cli.is_reverse(origin) else "A 192.0.2.1"
+    rtype = "PTR x.example.com." if reverse.is_reverse(origin) else "A 192.0.2.1"
     mismatches = []
     for token in sorted(set(sweep_tokens())):
         expected = sweep_expected(token, origin)
         # The helper ...
         try:
-            got = "name" if cli.owner_to_name(token, origin) is None else "address"
+            got = "name" if reverse.owner_to_name(token, origin) is None else "address"
         except ValueError:
             got = "error"
         # ... and end to end, the way an edited file is read
         try:
-            m, _ = cli.parse_text(f"$TTL 300\n{SOA}{token} {rtype}\n", origin)
+            m, _ = zonefile.parse_text(f"$TTL 300\n{SOA}{token} {rtype}\n", origin)
             (name,) = [k[0].derelativize(origin) for k in m]
             if expected == "name":
                 e2e = name == dns.name.from_text(token, origin)
             else:
-                e2e = expected == "address" and name == dns.name.from_text(cli.owner_to_name(token, origin))
+                e2e = expected == "address" and name == dns.name.from_text(
+                    reverse.owner_to_name(token, origin)
+                )
         except ValueError as e:
             e2e = expected == "error" or (expected == "address" and "outside the zone" in str(e))
         if got != expected or not e2e:
@@ -751,7 +762,7 @@ def test_owner_sweep(zone):
 
 
 def verify_with(monkeypatch, results, serials=(), attempts=None):
-    """Run cli.verify() with fetch() returning (or raising) each of results in
+    """Run session.verify() with fetch() returning (or raising) each of results in
     turn, and live_soa() answering with each of serials (then None: no answer)."""
     calls, live = iter(results), iter(serials)
 
@@ -761,12 +772,12 @@ def verify_with(monkeypatch, results, serials=(), attempts=None):
             raise r
         return r
 
-    monkeypatch.setattr(cli, "fetch", fetch)
-    monkeypatch.setattr(cli, "live_soa", lambda ctx: next((soa_rd(f"{n} 1 2 3 4") for n in live), None))
-    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    monkeypatch.setattr(rfc2136, "fetch", fetch)
+    monkeypatch.setattr(rfc2136, "live_soa", lambda ctx: next((soa_rd(f"{n} 1 2 3 4") for n in live), None))
+    monkeypatch.setattr(session.time, "sleep", lambda s: None)
     base, _, _ = model("www A 192.0.2.10\n")
     new, _, _ = model("www A 192.0.2.11\n")
-    return cli.verify(None, base, new, attempts=attempts or len(results))
+    return session.verify(None, base, new, attempts=attempts or len(results))
 
 
 def test_verify_transfers_again_only_when_the_serial_moved(monkeypatch):
@@ -780,13 +791,13 @@ def test_verify_transfers_again_only_when_the_serial_moved(monkeypatch):
 
 
 def test_verify_reports_failed_transfer(monkeypatch):
-    bad = verify_with(monkeypatch, [cli.ZeditError("AXFR failed: refused")] * 3)
+    bad = verify_with(monkeypatch, [ZeditError("AXFR failed: refused")] * 3)
     assert len(bad) == 1 and "transfer for verification failed" in bad[0] and "refused" in bad[0]
 
 
 def test_verify_retries_after_failed_transfer(monkeypatch):
     edited = model("www A 192.0.2.11\n")
-    assert verify_with(monkeypatch, [cli.ZeditError("AXFR failed: timed out"), edited]) == []
+    assert verify_with(monkeypatch, [ZeditError("AXFR failed: timed out"), edited]) == []
 
 
 @pytest.mark.parametrize(
@@ -801,11 +812,11 @@ def test_verify_retries_after_failed_transfer(monkeypatch):
 )
 def test_records_dnspython_would_merge_silently_are_errors(body, match):
     with pytest.raises(ValueError, match=match):
-        cli.parse_text("$TTL 3600\n" + SOA + "@ NS ns1\n" + body, ORIGIN)
+        zonefile.parse_text("$TTL 3600\n" + SOA + "@ NS ns1\n" + body, ORIGIN)
 
 
 def test_identical_records_are_not_an_error():
-    m, _ = cli.parse_text(
+    m, _ = zonefile.parse_text(
         "$TTL 300\n"
         + SOA
         + "@ NS ns1\nwww CNAME a\nwww CNAME a.example.com.\nmail A 192.0.2.9\nmail A 192.0.2.9\n",
@@ -817,7 +828,7 @@ def test_identical_records_are_not_an_error():
 def test_dnspython_reader_hook():
     """zedit relies on private dnspython API: dns.zonefile.Reader calls _eat_line()
     when it drops a record outside the zone, with the owner in last_name (see
-    cli._Reader). If this fails after a dnspython upgrade, that API has changed
+    zonefile._Reader). If this fails after a dnspython upgrade, that API has changed
     and records outside the zone would again be silently ignored."""
     text = (
         SOA
@@ -828,29 +839,29 @@ def test_dnspython_reader_hook():
         + "$ORIGIN example.com.\n"
         + "mail 300 IN A 192.0.2.20\n"
     )
-    zone, outside = cli.read_zone(text, ORIGIN)
+    zone, outside = zonefile.read_zone(text, ORIGIN)
     assert outside == ["host.elsewhere.org.", "other.example.net."]
     assert {n.to_text() for n in zone.nodes} == {"@", "www", "mail"}
-    # cli._StrictAdds relies on the reader adding each record with
+    # zonefile._StrictAdds relies on the reader adding each record with
     # txn.add(name, ttl, rdata); if that changes, it no longer sees the records.
     with pytest.raises(ValueError, match="TTL 600 differs"):
-        cli.read_zone(SOA + "www 300 IN A 192.0.2.10\nwww 600 IN A 192.0.2.11\n", ORIGIN)
+        zonefile.read_zone(SOA + "www 300 IN A 192.0.2.10\nwww 600 IN A 192.0.2.11\n", ORIGIN)
 
 
 def editor_session(monkeypatch, tmp_path, editor, answers):
-    """Run cli.edit_until_valid() on a valid zone file with the given $EDITOR and prompt answers."""
+    """Run session.edit_until_valid() on a valid zone file with the given $EDITOR and prompt answers."""
     monkeypatch.delenv("VISUAL", raising=False)
     monkeypatch.setenv("EDITOR", editor)
     replies = iter(answers)
-    monkeypatch.setattr(cli, "ask", lambda prompt, choices: next(replies))
+    monkeypatch.setattr(session, "ask", lambda prompt, choices: next(replies))
     _, base_soa, _ = model("")
     f = tmp_path / "z.zone"
     f.write_text("$TTL 300\n" + SOA + "@ NS ns1\nwww A 192.0.2.10\n")
-    return cli.edit_until_valid(str(f), ORIGIN, base_soa)
+    return session.edit_until_valid(str(f), ORIGIN, base_soa)
 
 
 def test_missing_editor_is_an_error(monkeypatch, tmp_path):
-    with pytest.raises(cli.ZeditError, match="cannot run editor"):
+    with pytest.raises(ZeditError, match="cannot run editor"):
         editor_session(monkeypatch, tmp_path, str(tmp_path / "no-such-editor"), [])
 
 
@@ -877,7 +888,7 @@ def test_resume_command_keeps_the_options(argv):
     and --resume pointing at the session."""
     parser = cli.make_parser()
     args = parser.parse_args(argv)
-    cmd = shlex.split(cli.resume_command(args, "/state/ex ample.zone"))
+    cmd = shlex.split(session.resume_command(args, "/state/ex ample.zone"))
     assert cmd[0] == "zedit"
     again = parser.parse_args(cmd[1:])
     expected = {**vars(args), "dry_run": False, "resume": "/state/ex ample.zone"}
@@ -888,12 +899,12 @@ def test_resume_command_keeps_the_options(argv):
 
 @pytest.mark.parametrize(("no_color", "colored"), [(None, True), ("", True), ("1", False)])
 def test_diff_color_honours_no_color(monkeypatch, capsys, no_color, colored):
-    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(session.sys.stdout, "isatty", lambda: True)
     if no_color is None:
         monkeypatch.delenv("NO_COLOR", raising=False)
     else:
         monkeypatch.setenv("NO_COLOR", no_color)
-    cli.show_diff(["a"], ["b"], "old", "new")
+    session.show_diff(["a"], ["b"], "old", "new")
     assert ("\033[" in capsys.readouterr().out) == colored
 
 
@@ -914,8 +925,8 @@ def test_resolve_falls_back_to_a_reachable_address(monkeypatch, listener):
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
         ]
 
-    monkeypatch.setattr(cli.socket, "getaddrinfo", getaddrinfo)
-    assert cli.resolve("ns1.example.net", listener) == "127.0.0.1"
+    monkeypatch.setattr(rfc2136.socket, "getaddrinfo", getaddrinfo)
+    assert rfc2136.resolve("ns1.example.net", listener) == "127.0.0.1"
 
 
 def test_resolve_fails_when_nothing_answers(capsys):
@@ -923,7 +934,7 @@ def test_resolve_fails_when_nothing_answers(capsys):
         s.bind(("127.0.0.1", 0))
         closed = s.getsockname()[1]  # bound but not listening: refused
         with pytest.raises(SystemExit):
-            cli.resolve("127.0.0.1", closed)
+            rfc2136.resolve("127.0.0.1", closed)
     assert "cannot connect to 127.0.0.1 port" in capsys.readouterr().err
 
 
@@ -944,8 +955,8 @@ def test_cds_filtered_only_at_the_apex():
 
 def test_cds_at_the_apex_cannot_be_added():
     with pytest.raises(ValueError, match="CDS/CDNSKEY at the apex"):
-        cli.parse_text("$TTL 300\n" + SOA + f"@ CDS {CDS_RDATA}\n", ORIGIN)
-    m, _ = cli.parse_text("$TTL 300\n" + SOA + f"_dsboot.child.example CDS {CDS_RDATA}\n", ORIGIN)
+        zonefile.parse_text("$TTL 300\n" + SOA + f"@ CDS {CDS_RDATA}\n", ORIGIN)
+    m, _ = zonefile.parse_text("$TTL 300\n" + SOA + f"_dsboot.child.example CDS {CDS_RDATA}\n", ORIGIN)
     assert key("_dsboot.child.example", "CDS") in m
 
 
@@ -957,7 +968,7 @@ def test_signal_warnings():
         f"_DSBOOT.b.example CDNSKEY {CDNSKEY_RDATA}\n"  # DNS names are case-insensitive
         f"_dsbot.c.example CDS {CDS_RDATA}\n"
     )
-    (warning,) = cli.signal_warnings(base, new)
+    (warning,) = changes.signal_warnings(base, new)
     assert warning.startswith("_dsbot.c.example CDS is not at a _dsboot name")
 
 
@@ -972,7 +983,7 @@ def test_ascii_warnings():
         'note TXT "R\u00e4ksm\u00f6rg\u00e5s"\n'  # free text may be anything
         'v10 TXT "v=spf10 \u00e5"\n'
     )
-    warnings = cli.ascii_warnings(base, new)
+    warnings = changes.ascii_warnings(base, new)
     assert [w.split(":")[0] for w in warnings] == ["@ TXT", "_dmarc TXT", "sel._domainkey TXT"]
     assert "SPF records must be ASCII" in warnings[0] and "A-labels (xn--...)" in warnings[0]
     assert "DMARC" in warnings[1] and "DKIM" in warnings[2]
@@ -989,7 +1000,7 @@ def test_merge_singleton_type_is_a_conflict(base, mine, theirs):
     """A CNAME holds one record, so mine and the server's can't be merged as a
     union: dnspython would keep one of them depending on hash order. It is a
     conflict, and mine is kept."""
-    merged, notes, dropped, conflicts = cli.merge3(model(base)[0], model(mine)[0], model(theirs)[0])
+    merged, notes, dropped, conflicts = merge.merge3(model(base)[0], model(mine)[0], model(theirs)[0])
     k = key("alias", "CNAME")
     assert [r.to_text() for r in merged[k]] == ["mine"]
     assert conflicts == 1
@@ -1001,15 +1012,15 @@ def test_apex_ns_cannot_all_be_removed(tmp_path):
     f = tmp_path / "z.zone"
     f.write_text("$TTL 300\n" + SOA + "www A 192.0.2.10\n")
     with pytest.raises(ValueError, match="apex needs at least one NS"):
-        cli.parse_file(str(f), ORIGIN, base_soa)
+        zonefile.parse_file(str(f), ORIGIN, base_soa)
 
 
 def test_sessions_in_the_same_second_get_their_own_files(tmp_path, monkeypatch):
     """Two sessions for the same zone started within one second must not share
     (and overwrite) the saved .zone and .base files."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    monkeypatch.setattr(cli.time, "strftime", lambda fmt, *a: "20261007T120000")
-    first, second = cli.new_session_path(ORIGIN), cli.new_session_path(ORIGIN)
+    monkeypatch.setattr(session.time, "strftime", lambda fmt, *a: "20261007T120000")
+    first, second = session.new_session_path(ORIGIN), session.new_session_path(ORIGIN)
     assert first != second
     assert os.path.basename(first) == "example.com-20261007T120000.zone"
     assert os.path.basename(second) == "example.com-20261007T120000-2.zone"
@@ -1018,10 +1029,10 @@ def test_sessions_in_the_same_second_get_their_own_files(tmp_path, monkeypatch):
 
 def test_state_dir_warns_if_others_can_access_it(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    d = cli.state_dir()
+    d = session.state_dir()
     assert oct(os.stat(d).st_mode & 0o777) == "0o700" and capsys.readouterr().err == ""
     os.chmod(d, 0o755)  # zedit doesn't change it back, but says so
-    assert cli.state_dir() == d and oct(os.stat(d).st_mode & 0o777) == "0o755"
+    assert session.state_dir() == d and oct(os.stat(d).st_mode & 0o777) == "0o755"
     assert "is accessible by group/others" in capsys.readouterr().err
 
 
@@ -1031,8 +1042,8 @@ KEY = 'key "{name}" {{\n\talgorithm hmac-sha256;\n\tsecret "c2VjcmV0c2VjcmV0c2Vj
 def test_key_file_with_one_key(tmp_path):
     f = tmp_path / "admin.key"
     f.write_text(KEY.format(name="admin"))
-    keyring, keyname = cli.load_bind_key(str(f))
-    assert keyname == cli.dns.name.from_text("admin") and keyname in keyring
+    keyring, keyname = rfc2136.load_bind_key(str(f))
+    assert keyname == rfc2136.dns.name.from_text("admin") and keyname in keyring
 
 
 def test_key_file_with_several_keys_is_an_error(tmp_path, capsys):
@@ -1041,7 +1052,7 @@ def test_key_file_with_several_keys_is_an_error(tmp_path, capsys):
     f = tmp_path / "two.key"
     f.write_text(KEY.format(name="admin") + KEY.format(name="other"))
     with pytest.raises(SystemExit):
-        cli.load_bind_key(str(f))
+        rfc2136.load_bind_key(str(f))
     assert "has 2 key statements (admin, other); a key file must hold a single key" in capsys.readouterr().err
 
 
@@ -1052,18 +1063,18 @@ def test_live_soa_names_are_relative_like_the_transfer(monkeypatch):
     answer = "example.com. 3600 IN SOA ns1.example.com. hostmaster.example.com. 105 7200 900 1209600 300"
 
     def tcp(q, server, port, timeout):
-        return cli.dns.message.from_text(
+        return rfc2136.dns.message.from_text(
             f"id {q.id}\nopcode QUERY\nrcode NOERROR\nflags QR AA\n;ANSWER\n{answer}\n"
         )
 
-    monkeypatch.setattr(cli.dns.query, "tcp", tcp)
-    ctx = cli.SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53, keyring=None, keyname=None)
-    live = cli.live_soa(ctx)
+    monkeypatch.setattr(rfc2136.dns.query, "tcp", tcp)
+    ctx = SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53, keyring=None, keyname=None)
+    live = rfc2136.live_soa(ctx)
     _, base, _ = model("", soa="@ 3600 IN SOA ns1 hostmaster 100 7200 900 1209600 300\n")
     assert (live[0].mname, live[0].rname, live[0].serial) == (base[0].mname, base[0].rname, 105)
     assert live.ttl == 3600
     answer = answer.replace("hostmaster.example.com.", "hostmaster.example.net.")
-    assert cli.live_soa(ctx)[0].rname.to_text() == "hostmaster.example.net."
+    assert rfc2136.live_soa(ctx)[0].rname.to_text() == "hostmaster.example.net."
 
 
 def test_case_only_changes_are_put_back():
@@ -1073,15 +1084,15 @@ def test_case_only_changes_are_put_back():
     new, new_soa, _ = model(
         "WWW CNAME Target\nmail MX 10 mx\nmail MX 30 mx3\n", soa=SOA.replace("hostmaster", "HostMaster")
     )
-    new, new_soa, recased = cli.keep_base_case(base, base_soa, new, new_soa)
-    assert [f"{k[0]} {cli.tname(k[1])}" for k in recased] == ["@ SOA", "www CNAME", "mail MX"]
-    assert cli.rr_lines(new, ORIGIN) == [
+    new, new_soa, recased = merge.keep_base_case(base, base_soa, new, new_soa)
+    assert [f"{k[0]} {tname(k[1])}" for k in recased] == ["@ SOA", "www CNAME", "mail MX"]
+    assert zonefile.rr_lines(new, ORIGIN) == [
         "mail\t300\tIN\tMX\t10 Mx",
         "mail\t300\tIN\tMX\t30 mx3",
         "www\t300\tIN\tCNAME\ttarget",
     ]
-    assert str(new_soa[0].rname) == "hostmaster" and not cli.soa_changed(base_soa, new_soa)
-    unchanged, _, none = cli.keep_base_case(base, base_soa, base, base_soa)
+    assert str(new_soa[0].rname) == "hostmaster" and not changes.soa_changed(base_soa, new_soa)
+    unchanged, _, none = merge.keep_base_case(base, base_soa, base, base_soa)
     assert none == [] and unchanged == base
 
 
@@ -1089,7 +1100,7 @@ def test_writes_are_private_and_ignores_planted_symlinks(tmp_path):
     path = tmp_path / "s.zone"
     target = tmp_path / "elsewhere"
     (tmp_path / "s.zone.tmp").symlink_to(target)  # the name the old code wrote to
-    cli.write_pair(((str(path), "x\n"),))
+    session.write_pair(((str(path), "x\n"),))
     assert path.read_text() == "x\n" and oct(path.stat().st_mode & 0o777) == "0o600"
     assert not target.exists()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["s.zone", "s.zone.tmp"]
@@ -1101,16 +1112,16 @@ def test_failed_write_leaves_the_session_pair_alone(tmp_path, monkeypatch):
     edit, base = tmp_path / "s.zone", tmp_path / "s.zone.base"
     edit.write_text("old edit\n")
     base.write_text("old base\n")
-    write_tmp = cli.write_tmp
+    write_tmp = session.write_tmp
 
     def full_disk(path, text):
         if path == str(base):
             raise OSError(28, "No space left on device")
         return write_tmp(path, text)
 
-    monkeypatch.setattr(cli, "write_tmp", full_disk)
+    monkeypatch.setattr(session, "write_tmp", full_disk)
     with pytest.raises(OSError):
-        cli.write_pair(((str(edit), "new edit\n"), (str(base), "new base\n")))
+        session.write_pair(((str(edit), "new edit\n"), (str(base), "new base\n")))
     assert (edit.read_text(), base.read_text()) == ("old edit\n", "old base\n")
     assert sorted(p.name for p in tmp_path.iterdir()) == ["s.zone", "s.zone.base"]
 
@@ -1122,7 +1133,7 @@ def test_ctrl_c_in_the_editor_doesnt_stop_zedit(tmp_path):
     editor = tmp_path / "ed.sh"
     editor.write_text("#!/bin/sh\nkill -INT 0\nsleep 1\n")
     editor.chmod(0o755)
-    code = "import sys; from zedit import cli; print(cli.run_editor(sys.argv[1]))"
+    code = "import sys; from zedit import session; print(session.run_editor(sys.argv[1]))"
     env = {k: v for k, v in os.environ.items() if k != "VISUAL"} | {"EDITOR": str(editor)}
     r = subprocess.run(
         [sys.executable, "-c", code, "f"], env=env, capture_output=True, text=True, start_new_session=True
@@ -1138,11 +1149,11 @@ def test_session_files_are_utf8(tmp_path):
     f = tmp_path / "s.zone"
     body = "$TTL 300\n" + SOA + '@ NS ns1\ntxt TXT "R\u00e4ksm\u00f6rg\u00e5s"\n'
     f.write_bytes(body.encode("utf-8"))
-    m, _ = cli.parse_file(str(f), ORIGIN, base_soa)
+    m, _ = zonefile.parse_file(str(f), ORIGIN, base_soa)
     assert m[key("txt", "TXT")][0].strings == ("R\u00e4ksm\u00f6rg\u00e5s".encode(),)
     f.write_bytes(body.encode("latin-1"))
     with pytest.raises(ValueError, match="^line 4: not valid UTF-8 \\(byte 0xe4\\)"):
-        cli.parse_file(str(f), ORIGIN, base_soa)
+        zonefile.parse_file(str(f), ORIGIN, base_soa)
 
 
 @pytest.mark.parametrize(
@@ -1156,36 +1167,36 @@ def test_session_files_are_utf8(tmp_path):
 )
 def test_errors_are_reported_on_their_line(records):
     with pytest.raises(ValueError, match="^line 4: "):
-        cli.parse_text("$TTL 300\n" + SOA + "@ NS ns1\n" + records + "\n", ORIGIN)
+        zonefile.parse_text("$TTL 300\n" + SOA + "@ NS ns1\n" + records + "\n", ORIGIN)
 
 
 def test_non_ascii_names_use_idna_2008():
     """As registries do: under IDNA 2003 (dnspython's default) straße.de would
     become strasse.de, a different domain."""
     text = "$TTL 300\n" + SOA + "@ NS ns1\nr\u00e4ksm\u00f6rg\u00e5s CNAME stra\u00dfe.de.\n"
-    m, _ = cli.parse_text(text, ORIGIN)
-    assert cli.rr_lines(m, ORIGIN)[1] == "xn--rksmrgs-5wao1o\t300\tIN\tCNAME\txn--strae-oqa.de."
+    m, _ = zonefile.parse_text(text, ORIGIN)
+    assert zonefile.rr_lines(m, ORIGIN)[1] == "xn--rksmrgs-5wao1o\t300\tIN\tCNAME\txn--strae-oqa.de."
 
 
 @pytest.mark.parametrize("record", ["\u2603 A 192.0.2.1", "x CNAME a\u200db."])
 def test_invalid_idn_is_an_error_on_its_line(record):
     with pytest.raises(ValueError, match="^line 4: IDNA"):
-        cli.parse_text("$TTL 300\n" + SOA + "@ NS ns1\n" + record + "\n", ORIGIN)
+        zonefile.parse_text("$TTL 300\n" + SOA + "@ NS ns1\n" + record + "\n", ORIGIN)
 
 
 def plan_ops():
     """Prerequisites, deletes and adds for a typical edit."""
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\ngone TXT x\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nnew A 192.0.2.4\n")
-    dels, adds, final = cli.compute_update(old, new, ORIGIN)
-    return cli.compute_prereqs(old, new, ORIGIN) + dels + adds + final
+    dels, adds, final = rfc2136.compute_update(old, new, ORIGIN)
+    return rfc2136.compute_prereqs(old, new, ORIGIN) + dels + adds + final
 
 
 def test_update_message_sections():
     """RFC 2136 encoding: value-dependent prerequisites in class IN with TTL 0,
     "RRset does not exist" in class NONE, deleting an RRset in class ANY,
     deleting one RR in class NONE with TTL 0."""
-    msg = cli.update_message(ORIGIN, plan_ops())
+    msg = rfc2136.update_message(ORIGIN, plan_ops())
     sections = {
         name: sorted(" ".join(line.split()) for rrset in rrsets for line in rrset.to_text().splitlines())
         for name, rrsets in (("prereq", msg.prerequisite), ("update", msg.update))
@@ -1208,14 +1219,14 @@ def test_update_message_sections():
 
 
 def test_update_message_is_signed_with_the_key():
-    keyring = cli.dns.tsigkeyring.from_text({"admin": ("hmac-sha256", "c2VjcmV0c2VjcmV0c2VjcmV0")})
-    msg = cli.update_message(ORIGIN, plan_ops(), keyring, cli.dns.name.from_text("admin"))
+    keyring = rfc2136.dns.tsigkeyring.from_text({"admin": ("hmac-sha256", "c2VjcmV0c2VjcmV0c2VjcmV0")})
+    msg = rfc2136.update_message(ORIGIN, plan_ops(), keyring, rfc2136.dns.name.from_text("admin"))
     msg.to_wire()  # signs
-    assert msg.keyname == cli.dns.name.from_text("admin") and msg.had_tsig
+    assert msg.keyname == rfc2136.dns.name.from_text("admin") and msg.had_tsig
 
 
 def test_script_text_matches_the_ops():
-    script = cli.script_text("192.0.2.53", 53, ORIGIN, plan_ops())
+    script = rfc2136.script_text("192.0.2.53", 53, ORIGIN, plan_ops())
     assert script.splitlines()[:2] == ["server 192.0.2.53 53", "zone example.com."]
     assert script.splitlines()[-1] == "send"
     assert "prereq nxrrset new.example.com. IN A" in script
@@ -1223,30 +1234,30 @@ def test_script_text_matches_the_ops():
 
 
 def send_with(monkeypatch, outcome):
-    """Run cli.send_update() with dns.query.tcp answering with rcode outcome, or
+    """Run rfc2136.send_update() with dns.query.tcp answering with rcode outcome, or
     raising it."""
 
     def tcp(msg, server, port, timeout):
         if isinstance(outcome, BaseException):
             raise outcome
-        response = cli.dns.message.make_response(msg)
+        response = rfc2136.dns.message.make_response(msg)
         response.set_rcode(outcome)
         return response
 
-    monkeypatch.setattr(cli.dns.query, "tcp", tcp)
-    ctx = cli.SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53, keyring=None, keyname=None)
-    return cli.send_update(ctx, plan_ops())
+    monkeypatch.setattr(rfc2136.dns.query, "tcp", tcp)
+    ctx = SimpleNamespace(origin=ORIGIN, server="192.0.2.53", port=53, keyring=None, keyname=None)
+    return rfc2136.send_update(ctx, plan_ops())
 
 
 @pytest.mark.parametrize(
     ("outcome", "ok", "can_rebase", "text"),
     [
-        (cli.dns.rcode.NOERROR, True, False, ""),
-        (cli.dns.rcode.NXRRSET, False, True, "NXRRSET"),
-        (cli.dns.rcode.YXRRSET, False, True, "YXRRSET"),
-        (cli.dns.rcode.REFUSED, False, False, "REFUSED"),
-        (cli.dns.rcode.NOTAUTH, False, False, "NOTAUTH"),
-        (cli.dns.exception.Timeout(), False, True, "unknown whether"),
+        (rfc2136.dns.rcode.NOERROR, True, False, ""),
+        (rfc2136.dns.rcode.NXRRSET, False, True, "NXRRSET"),
+        (rfc2136.dns.rcode.YXRRSET, False, True, "YXRRSET"),
+        (rfc2136.dns.rcode.REFUSED, False, False, "REFUSED"),
+        (rfc2136.dns.rcode.NOTAUTH, False, False, "NOTAUTH"),
+        (rfc2136.dns.exception.Timeout(), False, True, "unknown whether"),
         (EOFError(), False, True, "unknown whether"),
         (ConnectionRefusedError(111, "Connection refused"), False, False, "Connection refused"),
     ],
