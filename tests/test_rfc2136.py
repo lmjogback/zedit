@@ -5,6 +5,7 @@ from helpers import ORIGIN, changeset, lines, model
 
 from zedit import changes, rfc2136
 from zedit.backend import Outcome
+from zedit.model import ZeditError
 
 
 def test_compute_update_minimal_and_ordered():
@@ -103,13 +104,12 @@ def test_resolve_falls_back_to_a_reachable_address(monkeypatch, listener):
     assert rfc2136.resolve("ns1.example.net", listener) == "127.0.0.1"
 
 
-def test_resolve_fails_when_nothing_answers(capsys):
+def test_resolve_fails_when_nothing_answers():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         closed = s.getsockname()[1]  # bound but not listening: refused
-        with pytest.raises(SystemExit):
+        with pytest.raises(ZeditError, match="cannot connect to 127.0.0.1 port"):
             rfc2136.resolve("127.0.0.1", closed)
-    assert "cannot connect to 127.0.0.1 port" in capsys.readouterr().err
 
 
 KEY = 'key "{name}" {{\n\talgorithm hmac-sha256;\n\tsecret "c2VjcmV0c2VjcmV0c2VjcmV0";\n}};\n'
@@ -122,14 +122,15 @@ def test_key_file_with_one_key(tmp_path):
     assert keyname == rfc2136.dns.name.from_text("admin") and keyname in keyring
 
 
-def test_key_file_with_several_keys_is_an_error(tmp_path, capsys):
+def test_key_file_with_several_keys_is_an_error(tmp_path):
     """One key per file, as in 1.2.1, where nsupdate -k refused such a file;
     kept so that the switch to dnspython changes no behaviour."""
     f = tmp_path / "two.key"
     f.write_text(KEY.format(name="admin") + KEY.format(name="other"))
-    with pytest.raises(SystemExit):
+    with pytest.raises(
+        ZeditError, match=r"has 2 key statements \(admin, other\); a key file must hold a single key"
+    ):
         rfc2136.load_bind_key(str(f))
-    assert "has 2 key statements (admin, other); a key file must hold a single key" in capsys.readouterr().err
 
 
 def test_live_soa_names_are_relative_like_the_transfer(monkeypatch):

@@ -1,8 +1,7 @@
 """Types, constants and helpers shared by the other modules."""
 
-import sys
 from dataclasses import dataclass, field
-from typing import NamedTuple, NoReturn
+from typing import NamedTuple
 
 import dns.name
 import dns.rdataset
@@ -77,11 +76,6 @@ class Zone:
 
 def tname(t: int) -> str:
     return dns.rdatatype.RdataType.to_text(t)
-
-
-def die(msg: str, code: int = 1) -> NoReturn:
-    print(f"zedit: {msg}", file=sys.stderr)
-    sys.exit(code)
 
 
 def sortkey(k: RRKey | HiddenKey) -> tuple[dns.name.Name, int]:
