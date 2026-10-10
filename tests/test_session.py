@@ -1,3 +1,9 @@
+"""The editing session: its files and how they survive failures, the
+verification after an update, the editor and prompts, and the command that
+resumes a session. The tests that need a server use a stand-in backend
+(SimpleNamespace with fetch and current_soa); test_integration.py runs whole
+sessions against BIND."""
+
 import os
 import shlex
 import subprocess
@@ -15,6 +21,8 @@ from zedit.model import Options, ZeditError
 
 
 def test_file_stem_is_a_safe_file_name():
+    """Session and key file names come from the zone name, lowercased; the '/'
+    of an RFC 2317 zone would otherwise make a directory."""
     assert session.file_stem(dns.name.from_text("Example.COM.")) == "example.com"
     assert (
         session.file_stem(dns.name.from_text("16/28.2.0.192.in-addr.arpa.")) == "16_28.2.0.192.in-addr.arpa"
@@ -54,11 +62,14 @@ def test_verify_transfers_again_only_when_the_serial_moved(monkeypatch):
 
 
 def test_verify_reports_failed_transfer(monkeypatch):
+    """The update was sent, so a transfer that keeps failing makes it "not
+    verified", with the reason, not an error that hides that it was sent."""
     bad = verify_with(monkeypatch, [ZeditError("AXFR failed: refused")] * 3)
     assert len(bad) == 1 and "transfer for verification failed" in bad[0] and "refused" in bad[0]
 
 
 def test_verify_retries_after_failed_transfer(monkeypatch):
+    """One failed transfer isn't the end: the next one shows the edit applied."""
     edited = zone("www A 192.0.2.11\n")
     assert verify_with(monkeypatch, [ZeditError("AXFR failed: timed out"), edited]) == []
 
@@ -68,8 +79,9 @@ def test_verify_stops_at_its_deadline(monkeypatch, cost, transfers):
     """Every transfer fails after cost seconds (None: when its timeout runs
     out). verify() gives each one only the time that is left, and stops at the
     deadline instead of after ten full timeouts."""
+    # A fake clock: sleeping and transfers advance it, nothing really waits
     now = [0.0]
-    timeouts = []
+    timeouts = []  # the timeout each transfer was given
 
     def fetch(origin, timeout=None):
         timeouts.append(timeout)
@@ -99,11 +111,14 @@ def editor_session(monkeypatch, tmp_path, editor, answers):
 
 
 def test_missing_editor_is_an_error(monkeypatch, tmp_path):
+    """An $EDITOR that doesn't exist is reported as such."""
     with pytest.raises(ZeditError, match="cannot run editor"):
         editor_session(monkeypatch, tmp_path, str(tmp_path / "no-such-editor"), [])
 
 
 def test_failing_editor_aborts_or_edits_again(monkeypatch, tmp_path):
+    """An editor that exits non-zero (vim's :cq) is how users abort an edit:
+    zedit asks whether to abort or edit again, rather than sending the file."""
     assert editor_session(monkeypatch, tmp_path, "false", ["a"]) is None
     # "e" runs the editor again; once it succeeds, the file is parsed
     script = tmp_path / "ed.sh"
@@ -157,6 +172,8 @@ def test_resume_command_keeps_the_options(argv):
 
 @pytest.mark.parametrize(("no_color", "colored"), [(None, True), ("", True), ("1", False)])
 def test_diff_color_honours_no_color(monkeypatch, capsys, no_color, colored):
+    """The diff is coloured on a terminal unless NO_COLOR is set to something
+    (https://no-color.org: an empty value doesn't count)."""
     monkeypatch.setattr(session.sys.stdout, "isatty", lambda: True)
     if no_color is None:
         monkeypatch.delenv("NO_COLOR", raising=False)
@@ -179,6 +196,8 @@ def test_sessions_in_the_same_second_get_their_own_files(tmp_path, monkeypatch):
 
 
 def test_state_dir_warns_if_others_can_access_it(tmp_path, monkeypatch, capsys):
+    """The state directory is created private; if its mode is opened up later,
+    zedit warns, since sessions hold zone data, but leaves the mode alone."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     d = session.state_dir()
     assert oct(os.stat(d).st_mode & 0o777) == "0o700" and capsys.readouterr().err == ""
@@ -195,6 +214,8 @@ def session_pair(serial):
 
 
 def test_session_files_are_private(tmp_path):
+    """Both session files are readable only by the user, and no temporary or
+    .new files are left behind."""
     files = session.SessionFiles(str(tmp_path / "s.zone"))
     session.write_session(files, "edit\n", "base\n")
     for p in (files.path, files.basepath):
@@ -241,10 +262,14 @@ def test_interrupted_switch_leaves_a_whole_pair(tmp_path, monkeypatch, step, cra
     with open(files.basepath, "w") as f:
         f.write(old[1])
 
+    # Each of write_tmp(), os.replace() and sync_dir() is called more than once;
+    # counting the calls tells which step of STEPS is running
     calls = {"write": 0, "rename": 0, "sync": 0}
     write_tmp, replace, sync_dir = session.write_tmp, os.replace, session.sync_dir
 
     def counted(kind, fn, names):
+        """fn, but failing on the call that is step (names: its calls in order)."""
+
         def wrapper(*args):
             calls[kind] += 1
             if names[calls[kind] - 1] == step:
@@ -269,6 +294,8 @@ def test_interrupted_switch_leaves_a_whole_pair(tmp_path, monkeypatch, step, cra
     session.recover(files)
     pair = (open(files.path).read(), open(files.basepath).read())
     assert pair in (old, new)
+    # New once FILE.new exists and is kept: from "replace base" on, or after a
+    # crash at "sync" (an error there still cleans up and keeps the old pair)
     committed = STEPS.index(step) >= STEPS.index("replace base") or (crash and step == "sync")
     assert pair == (new if committed else old)
     assert not any(p.name.endswith(".new") for p in tmp_path.iterdir())
