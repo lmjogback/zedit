@@ -1,3 +1,8 @@
+"""Owner names written as IP addresses in reverse zones (192.0.2.10 for
+10.2.0.192.in-addr.arpa.), read in every kind of reverse zone and shown with -A.
+The sweep at the end checks all combinations of a set of boundary tokens and
+zones against the rules stated on their own (sweep_expected())."""
+
 import dns.exception
 import dns.name
 import dns.zone
@@ -6,11 +11,12 @@ from helpers import ORIGIN, REV, SOA
 
 from zedit import reverse, zonefile
 
-V6 = dns.name.from_text("8.b.d.0.1.0.0.2.ip6.arpa.")
-V6_NAME_1 = "1." + "0." * 23 + "8.b.d.0.1.0.0.2.ip6.arpa."
+V6 = dns.name.from_text("8.b.d.0.1.0.0.2.ip6.arpa.")  # the zone for 2001:db8::/32
+V6_NAME_1 = "1." + "0." * 23 + "8.b.d.0.1.0.0.2.ip6.arpa."  # 2001:db8::1
 
 
 def owners(text, origin):
+    """The absolute owner names of the records in text, as zedit reads them."""
     m = zonefile.parse_text("$TTL 300\n" + SOA + text, origin).records
     return {k[0].derelativize(origin).to_text() for k in m}
 
@@ -29,6 +35,9 @@ def owners(text, origin):
     ],
 )
 def test_address_owner_round_trip(zone, owner, name):
+    """An address converts to the owner name in the zone and back, in /24, /16,
+    RFC 2317 and per-address zones and in ip6.arpa; back is the address's
+    canonical spelling."""
     origin = dns.name.from_text(zone)
     assert reverse.owner_to_name(owner, origin) == name
     canonical = str(reverse.ipaddress.ip_address(owner))
@@ -36,6 +45,7 @@ def test_address_owner_round_trip(zone, owner, name):
 
 
 def test_address_owners_in_a_reverse_zone():
+    """Address owners and ordinary relative names (11) can be mixed in a file."""
     assert owners("192.0.2.10 PTR www.example.com.\n11 PTR mail.example.com.\n", REV) == {
         "10.2.0.192.in-addr.arpa.",
         "11.2.0.192.in-addr.arpa.",
@@ -56,23 +66,29 @@ def test_address_owners_in_a_reverse_zone():
     ],
 )
 def test_address_outside_the_zone_is_rejected(zone, owner):
+    """An address that doesn't belong in the zone is reported, not written
+    somewhere the user didn't mean; a reversed address is the usual mistake."""
     with pytest.raises(ValueError, match="outside the zone"):
         owners(f"{owner} PTR x.example.com.\n", dns.name.from_text(zone))
 
 
 def test_palindrome_address_is_the_same_either_way():
+    """An address that reads the same reversed is taken as an address."""
     origin = dns.name.from_text("20.10.in-addr.arpa.")
     assert owners("10.20.20.10 PTR x.example.com.\n", origin) == {"10.20.20.10.in-addr.arpa."}
 
 
 @pytest.mark.parametrize("owner", ["192.0.2.010", "192.0.2.256", "2001:db8:::1"])
 def test_invalid_address_is_an_error_with_the_users_line(owner):
+    """Something that looks like an address but isn't one (a leading zero, an
+    octet over 255) is an error on its line, not a strange relative name."""
     # line 1 $TTL, 2 SOA, 3 the 10 PTR record, 4 the invalid one
     with pytest.raises(ValueError, match=r"^line 4: .*not a valid one"):
         owners(f"10 PTR a.example.com.\n{owner} PTR x.example.com.\n", REV)
 
 
 def test_no_rewriting_outside_reverse_zones_or_for_absolute_names():
+    """Only owners in reverse zones are converted, and only relative ones."""
     # In a forward zone 192.0.2.10 is an ordinary relative name
     assert owners("192.0.2.10 A 192.0.2.10\n", ORIGIN) == {"192.0.2.10.example.com."}
     # A trailing dot makes it an absolute name, used as written
@@ -84,12 +100,15 @@ IP6_48 = dns.name.from_text("0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa.")  # 2001:db8::/4
 
 @pytest.mark.parametrize("owner", ["0.5.0.0", "0.0.0.0", "1.2.3.4", "a.b.c.d", "f", "0.5"])
 def test_nibble_names_in_ip6_zones_are_not_ipv4(owner):
+    """In an ip6.arpa zone, a name of single hex digits is a name (e.g. a
+    delegation), even when it looks like an IPv4 address."""
     # In ip6.arpa, 0.5.0.0 is a nibble name (here the /64 2001:db8:0:500::/64)
     assert reverse.owner_to_name(owner, IP6_48) is None
     assert owners(f"{owner} NS ns1.example.net.\n", IP6_48) == {f"{owner}.{IP6_48}"}
 
 
 def test_ip6_zone_with_delegations_and_ptrs():
+    """A typical /48: delegations by nibble name, PTRs by name and by address."""
     text = (
         "@ NS ns1.example.net.\n"
         "0.5.0.0 NS ns1.example.net.\n"
@@ -107,17 +126,21 @@ def test_ip6_zone_with_delegations_and_ptrs():
 
 
 def test_ipv4_in_an_ip6_zone_is_still_rejected():
+    """192.0.2.10 isn't a nibble name, so in ip6.arpa it is an IPv4 address,
+    which doesn't belong there."""
     # Not a nibble sequence, so still taken as an IPv4 address: outside the zone
     with pytest.raises(ValueError, match="outside the zone"):
         owners("192.0.2.10 PTR x.example.com.\n", IP6_48)
 
 
 def test_no_rewriting_in_in_addr_arpa_itself():
+    """Directly under in-addr.arpa, four labels are a valid name as written."""
     origin = dns.name.from_text("in-addr.arpa.")
     assert reverse.owner_to_name("10.2.0.192", origin) is None
 
 
 def test_no_addresses_shown_in_in_addr_arpa_itself():
+    """-A leaves in-addr.arpa's own owners as names, matching how they are read."""
     # Shown as 192.0.2.10, the owner would be read back as the relative name
     # 192.0.2.10.in-addr.arpa., so an unchanged file would move the PTR.
     origin = dns.name.from_text("in-addr.arpa.")
@@ -134,12 +157,15 @@ def test_no_addresses_shown_in_in_addr_arpa_itself():
 
 
 def test_continuation_lines_are_not_owners():
+    """A line inside ( ... ) continues the record above; its first token is
+    data, even when it looks like an address."""
     m = zonefile.parse_text("$TTL 300\n" + SOA + '10 TXT ( "first"\n192.0.2.99 )\n', REV).records
     ((key, rds),) = m.items()
     assert key[0].to_text() == "10" and rds[0].to_text() == '"first" "192.0.2.99"'
 
 
 def test_generate_with_address_owners():
+    """$GENERATE can write owners as addresses, IPv4 and IPv6."""
     assert owners("$GENERATE 20-22 192.0.2.$ PTR h$.example.com.\n", REV) == {
         "20.2.0.192.in-addr.arpa.",
         "21.2.0.192.in-addr.arpa.",
@@ -152,6 +178,9 @@ def test_generate_with_address_owners():
 
 
 def test_show_addresses_renders_and_round_trips():
+    """With -A, PTR owners are shown as addresses in numeric order (not the
+    name order, where 10 sorts before 2), the apex stays @, and the file
+    reads back unchanged."""
     z = dns.zone.from_text(
         "$TTL 300\n" + SOA + "@ NS ns1.example.net.\n100 PTR c.example.com.\n"
         "2 PTR a.example.com.\n10 PTR b.example.com.\n",
@@ -168,6 +197,7 @@ def test_show_addresses_renders_and_round_trips():
 
 
 def test_show_addresses_ipv6_compressed():
+    """With -A, an IPv6 owner is shown in its short form."""
     m = {(dns.name.from_text(V6_NAME_1).relativize(V6), 12): None}
     assert zonefile.owner_text(next(iter(m))[0], V6, True) == "2001:db8::1"
     assert zonefile.owner_text(next(iter(m))[0], V6, False) == V6_NAME_1.replace(
@@ -192,12 +222,14 @@ def test_show_addresses_ipv6_compressed():
     ],
 )
 def test_malformed_address_owners(owner, match):
+    """Malformed IPv6 addresses, zone ids and prefixes are errors that say why."""
     with pytest.raises(ValueError, match=match):
         reverse.owner_to_name(owner, V6)
 
 
 @pytest.mark.parametrize("owner", ["16/28", "17.16/28", "0-127", "10", "10.2"])
 def test_rfc2317_and_relative_names_are_not_addresses(owner):
+    """RFC 2317 labels and short relative names are names."""
     assert reverse.owner_to_name(owner, REV) is None
 
 
@@ -211,10 +243,12 @@ def test_rfc2317_and_relative_names_are_not_addresses(owner):
     ],
 )
 def test_ipv6_spellings_give_the_same_name(owner):
+    """Every valid spelling of an IPv6 address gives the same owner name."""
     assert reverse.owner_to_name(owner, V6) == V6_NAME_1
 
 
 def test_ipv6_with_embedded_ipv4_notation():
+    """The dotted IPv4 notation at the end of an IPv6 address is understood."""
     # 2001:db8::192.0.2.1 is 2001:db8::c000:201
     name = reverse.owner_to_name("2001:db8::192.0.2.1", V6)
     assert name.startswith("1.0.2.0.0.0.0.c.") and name.endswith(".8.b.d.0.1.0.0.2.ip6.arpa.")
@@ -222,10 +256,12 @@ def test_ipv6_with_embedded_ipv4_notation():
 
 
 def test_ipv4_mapped_address_outside_the_zone():
+    """An IPv4-mapped address (::ffff:a.b.c.d) is not in 2001:db8::/32."""
     with pytest.raises(ValueError, match="outside the zone"):
         owners("::ffff:192.0.2.1 PTR x.example.com.\n", V6)
 
 
+# Forward, IPv4 (/24, /16, /8, the root, RFC 2317, one address) and IPv6 zones
 SWEEP_ZONES = [
     "example.com.",
     "2.0.192.in-addr.arpa.",
@@ -243,6 +279,8 @@ SWEEP_MIXES = [("0", "10"), ("a", "5"), ("255", "0"), ("256", "1"), ("010", "1")
 
 
 def sweep_tokens():
+    """Owner tokens of one to eight labels, built from labels chosen to sit on
+    the boundaries: hex letters, 255/256, a leading zero."""
     for dots in range(8):
         k = dots + 1
         yield from {".".join([label] * k) for label in SWEEP_LABELS}
@@ -265,6 +303,9 @@ def sweep_expected(token, origin):
 
 @pytest.mark.parametrize("zone", SWEEP_ZONES)
 def test_owner_sweep(zone):
+    """Every token of sweep_tokens(), in every kind of zone: owner_to_name()
+    and the whole parser agree with sweep_expected(), which states the rules
+    independently of the code."""
     origin = dns.name.from_text(zone)
     rtype = "PTR x.example.com." if reverse.is_reverse(origin) else "A 192.0.2.1"
     mismatches = []
