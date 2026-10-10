@@ -55,6 +55,16 @@ APEX_NS = RRKey(dns.name.empty, NS)
 
 
 @dataclass(frozen=True)
+class Options:
+    """The zone and how to show it, as the command line asks."""
+
+    origin: dns.name.Name
+    show_all: bool = False  # -a, --no-rrsig
+    no_rrsig: bool = False
+    addresses: bool = False  # -A
+
+
+@dataclass(frozen=True)
 class Zone:
     """A zone as zedit sees it: the records that can be edited, the apex SOA,
     and the read-only records (none for a zone read from a file)."""

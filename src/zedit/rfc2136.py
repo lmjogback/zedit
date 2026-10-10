@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import re
 import socket
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import dns.exception
@@ -43,10 +44,27 @@ def load_bind_key(path):
     return kr, dns.name.from_text(name)
 
 
-def fetch(ctx):
+@dataclass(frozen=True)
+class Rfc2136Backend:
+    """The zone's primary server, at address and port, and the TSIG key for it
+    (keyring None: no TSIG). label names the server in messages."""
+
+    address: str
+    port: int
+    label: str
+    keyring: dict | None = None
+    keyname: dns.name.Name | None = None
+
+
+def fetch(server, origin):
     try:
         xfr = dns.query.xfr(
-            ctx.server, ctx.origin, port=ctx.port, keyring=ctx.keyring, keyname=ctx.keyname, lifetime=120
+            server.address,
+            origin,
+            port=server.port,
+            keyring=server.keyring,
+            keyname=server.keyname,
+            lifetime=120,
         )
         zone = dns.zone.from_xfr(xfr, relativize=True)
     except Exception as e:  # dnspython raises a whole zoo of types here
@@ -116,7 +134,7 @@ def compute_prereqs(edit, origin):
     return out
 
 
-def live_soa(ctx):
+def live_soa(server, origin):
     """The zone's SOA RRset as the server answers it now, or None if the query
     fails. With inline-signing it is the signed zone's SOA: its serial is normally
     >= the unsigned one, and its other fields are the same.
@@ -125,16 +143,16 @@ def live_soa(ctx):
     RNAME such as hostmaster.example.com. becomes hostmaster), so that its fields
     compare equal to the transferred and edited ones."""
     try:
-        q = dns.message.make_query(ctx.origin, dns.rdatatype.SOA)
-        if ctx.keyring:
-            q.use_tsig(ctx.keyring, keyname=ctx.keyname)
-        r = dns.query.tcp(q, ctx.server, port=ctx.port, timeout=10)
+        q = dns.message.make_query(origin, dns.rdatatype.SOA)
+        if server.keyring:
+            q.use_tsig(server.keyring, keyname=server.keyname)
+        r = dns.query.tcp(q, server.address, port=server.port, timeout=10)
         for rrset in r.answer:
             if rrset.rdtype == dns.rdatatype.SOA:
                 rd = rrset[0]
                 return dns.rdataset.from_rdata(
                     rrset.ttl,
-                    rd.replace(mname=rd.mname.relativize(ctx.origin), rname=rd.rname.relativize(ctx.origin)),
+                    rd.replace(mname=rd.mname.relativize(origin), rname=rd.rname.relativize(origin)),
                 )
     except Exception:
         pass
@@ -148,15 +166,15 @@ def soa_update(soa, origin):
     return [Op("add", origin, SOA, soa.ttl, (soa[0],))]
 
 
-def update_ops(ctx, edit):
+def update_ops(server, origin, edit):
     """-> (all steps of the UPDATE for the ChangeSet edit in order, SOA RRset sent
     or None, conflicting SOA fields): prerequisites, deletes, adds, final deletes
     (see compute_update()). The SOA is merged with the live zone at the moment
     this is called."""
-    dels, adds, final = compute_update(edit, ctx.origin)
-    live = live_soa(ctx) if edit.soa_changed else None
+    dels, adds, final = compute_update(edit, origin)
+    live = live_soa(server, origin) if edit.soa_changed else None
     soa, conflicts = changes.soa_to_send(edit.base_soa, edit.new_soa, live)
-    ops = compute_prereqs(edit, ctx.origin) + dels + adds + soa_update(soa, ctx.origin) + final
+    ops = compute_prereqs(edit, origin) + dels + adds + soa_update(soa, origin) + final
     return ops, soa, conflicts
 
 
@@ -180,10 +198,10 @@ def script_text(server, port, origin, ops):
     return "\n".join(lines + [line for op in ops for line in op_lines(op, origin)] + ["send", ""])
 
 
-def make_script(ctx, edit):
+def make_script(server, origin, edit):
     """-> (nsupdate script, SOA RRset sent or None, conflicting SOA fields)."""
-    ops, soa, conflicts = update_ops(ctx, edit)
-    return script_text(ctx.server, ctx.port, ctx.origin, ops), soa, conflicts
+    ops, soa, conflicts = update_ops(server, origin, edit)
+    return script_text(server.address, server.port, origin, ops), soa, conflicts
 
 
 def update_message(origin, ops, keyring=None, keyname=None):
@@ -209,11 +227,11 @@ UNKNOWN_OUTCOME = (
 )
 
 
-def send_update(ctx, ops):
+def send_update(server, origin, ops):
     """Send the UPDATE over TCP. -> (ok, message, rebase_makes_sense)"""
-    msg = update_message(ctx.origin, ops, ctx.keyring, ctx.keyname)
+    msg = update_message(origin, ops, server.keyring, server.keyname)
     try:
-        response = dns.query.tcp(msg, ctx.server, port=ctx.port, timeout=UPDATE_TIMEOUT)
+        response = dns.query.tcp(msg, server.address, port=server.port, timeout=UPDATE_TIMEOUT)
     except dns.exception.Timeout:
         return False, f"UPDATE timed out - {UNKNOWN_OUTCOME}", True
     except (EOFError, ConnectionResetError):

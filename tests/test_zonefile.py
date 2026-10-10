@@ -1,7 +1,6 @@
 import os
 import shutil
 import subprocess
-from types import SimpleNamespace
 
 import dns.exception
 import dns.name
@@ -10,7 +9,7 @@ import pytest
 from helpers import CDNSKEY_RDATA, CDS_RDATA, ORIGIN, REV, SOA, key, model
 
 from zedit import zonefile
-from zedit.model import same, tname
+from zedit.model import Options, same, tname
 
 
 def test_dnssec_types_filtered():
@@ -74,9 +73,9 @@ def test_show_all_renders_read_only_and_round_trips():
 
 def test_no_rrsig_keeps_keys_drops_noise():
     _, _, hidden = model(SIGNED)
-    ctx = SimpleNamespace(show_all=True, no_rrsig=True)
-    assert sorted(tname(k[1]) for k in zonefile.shown(ctx, hidden)) == ["DNSKEY", "TYPE65534"]
-    assert zonefile.shown(SimpleNamespace(show_all=False, no_rrsig=False), hidden) is None
+    opts = Options(ORIGIN, show_all=True, no_rrsig=True)
+    assert sorted(tname(k[1]) for k in zonefile.shown(opts, hidden)) == ["DNSKEY", "TYPE65534"]
+    assert zonefile.shown(Options(ORIGIN), hidden) is None
 
 
 @pytest.mark.parametrize(

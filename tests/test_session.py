@@ -25,18 +25,20 @@ def verify_with(monkeypatch, results, serials=(), attempts=None):
     turn, and live_soa() answering with each of serials (then None: no answer)."""
     calls, live = iter(results), iter(serials)
 
-    def fetch(ctx):
+    def fetch(server, origin):
         r = next(calls)
         if isinstance(r, Exception):
             raise r
         return r
 
     monkeypatch.setattr(rfc2136, "fetch", fetch)
-    monkeypatch.setattr(rfc2136, "live_soa", lambda ctx: next((soa_rd(f"{n} 1 2 3 4") for n in live), None))
+    monkeypatch.setattr(
+        rfc2136, "live_soa", lambda server, origin: next((soa_rd(f"{n} 1 2 3 4") for n in live), None)
+    )
     monkeypatch.setattr(session.time, "sleep", lambda s: None)
     base = zone("www A 192.0.2.10\n")
     new = zone("www A 192.0.2.11\n")
-    return session.verify(None, changes.change_set(base, new), attempts=attempts or len(results))
+    return session.verify(None, ORIGIN, changes.change_set(base, new), attempts=attempts or len(results))
 
 
 def test_verify_transfers_again_only_when_the_serial_moved(monkeypatch):

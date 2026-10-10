@@ -426,8 +426,8 @@ def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=Non
     return "\n".join(hdr + rr_lines(model, origin, pad, notes, hidden, addresses)) + "\n"
 
 
-def shown(ctx, hidden):
+def shown(opts, hidden):
     """The read-only records to display, per --show-all / --no-rrsig, or None."""
-    if not ctx.show_all:
+    if not opts.show_all:
         return None
-    return {k: v for k, v in hidden.items() if not (ctx.no_rrsig and k.rdtype in NOISY)}
+    return {k: v for k, v in hidden.items() if not (opts.no_rrsig and k.rdtype in NOISY)}
