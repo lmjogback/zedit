@@ -54,7 +54,7 @@ jobs:
 
   lowest:
     # The oldest dependency versions pyproject.toml allows (dnspython 2.4), which
-    # the lockfile never tests. zedit uses private dnspython API (cli._Reader).
+    # the lockfile never tests. zedit uses private dnspython API (zonefile._Reader).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

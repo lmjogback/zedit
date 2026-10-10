@@ -23,14 +23,14 @@ lists what the code doesn't tell you.
 - Keep README.md in step: options table, exit statuses, "Behaviour" section;
   and docs/signaling.md for anything about CDS/CDNSKEY or signals.
 - A new command-line option also goes into `resume_command()` in
-  `src/zedit/cli.py` (if it should carry over to `--resume`) and into
+  `src/zedit/session.py` (if it should carry over to `--resume`) and into
   `test_resume_command_keeps_the_options`. Nothing catches a forgotten one.
 
 ## dnspython
 
-`cli._Reader` overrides the private `dns.zonefile.Reader._eat_line()` and reads
-`last_name`, to report records outside the zone. `test_dnspython_reader_hook`
-guards this. Check it before raising the `dnspython<3` bound.
+`zonefile._Reader` overrides the private `dns.zonefile.Reader._eat_line()` and
+reads `last_name`, to report records outside the zone.
+`test_dnspython_reader_hook` guards this. Check it before raising the `dnspython<3` bound.
 
 ## Releases
 
