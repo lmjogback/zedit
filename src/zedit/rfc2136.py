@@ -1,4 +1,17 @@
-"""The RFC 2136 backend: TSIG, AXFR, SOA query and the DNS UPDATE."""
+"""The RFC 2136 backend: TSIG, AXFR, SOA query and the DNS UPDATE.
+
+The zone is read with a zone transfer (AXFR) and changed with one DNS UPDATE
+message (RFC 2136), which the server applies all at once or not at all. The
+UPDATE starts with prerequisites: for every RRset it changes, that the RRset is
+still exactly as transferred (or still absent). If another change got there
+first, the server answers NXRRSET or YXRRSET and changes nothing, and the
+session offers a rebase. RRsets the edit doesn't touch aren't checked, so
+unrelated concurrent updates (DHCP, ACME) don't get in the way.
+
+An UPDATE is built as a list of Op steps, from which both the message that is
+sent and the nsupdate script that --dry-run shows are made, so the two always
+agree. TSIG signs the transfer, the SOA queries and the UPDATE with the same key.
+"""
 
 import asyncio
 import contextlib
@@ -26,11 +39,12 @@ from zedit.backend import Outcome, Preview, SendResult
 from zedit.changes import ChangeSet
 from zedit.model import APEX_NS, SOA, ZeditError, Zone, tname
 
-Keyring = dict[dns.name.Name, dns.tsig.Key]
+Keyring = dict[dns.name.Name, dns.tsig.Key]  # as dnspython takes TSIG keys
 # What a failed query or transfer raises: TSIG errors (bad key or signature),
 # a refused or failed transfer (dns.xfr.TransferError), timeouts, connection
 # errors, and EOFError when the server closes the connection.
 QUERY_ERRORS = (dns.exception.DNSException, OSError, EOFError)
+# key "NAME" { algorithm ALG; secret "BASE64"; }; as tsig-keygen writes it
 KEY_STATEMENT = re.compile(r'key\s+"?([^"\s{]+)"?\s*\{(.*?)\}\s*;', re.S)
 
 
@@ -80,11 +94,13 @@ class Rfc2136Backend:
     keyname: dns.name.Name | None = None
 
     def fetch(self, origin: dns.name.Name, timeout: float | None = None) -> Zone:
+        """The zone by AXFR."""
         return fetch(self, origin, timeout)
 
     def current_soa(
         self, origin: dns.name.Name, timeout: float | None = None
     ) -> dns.rdataset.Rdataset | None:
+        """The SOA by a query, much cheaper than an AXFR for a large zone."""
         return live_soa(self, origin, timeout)
 
     def preview(self, origin: dns.name.Name, edit: ChangeSet) -> Preview:
@@ -101,11 +117,13 @@ class Rfc2136Backend:
         return replace(result, soa=soa) if result.outcome is Outcome.OK else result
 
 
-AXFR_TIMEOUT = 120
+AXFR_TIMEOUT = 120  # seconds, for a whole transfer unless the caller gives less
 SOA_QUERY_TIMEOUT = 10
 
 
 def fetch(server: Rfc2136Backend, origin: dns.name.Name, timeout: float | None = None) -> Zone:
+    """Transfer the zone (AXFR) and split it into a Zone. Raises ZeditError if
+    the transfer fails or takes longer than timeout seconds."""
     try:
         xfr = dns.query.xfr(
             server.address,
@@ -149,22 +167,24 @@ def compute_update(edit: ChangeSet, origin: dns.name.Name) -> tuple[list[Op], li
     whole RRset, since the TTL applies to all of it."""
     dels, adds, final = [], [], []
     for c in edit.rrsets:
-        key, o, n = c.key, c.old, c.new
+        key, o, n = c.key, c.old, c.new  # as transferred and as edited; None: absent
         name, t = key.name.derelativize(origin), key.rdtype
         if key == APEX_NS and o is not None and n is not None:
+            # A TTL change re-adds every record with the new TTL, which the
+            # server then applies to the whole RRset
             if changed := tuple(n) if o.ttl != n.ttl else tuple(r for r in n if r not in o):
                 adds.append(Op("add", name, t, n.ttl, changed))
             if gone := tuple(r for r in o if r not in n):
                 final.append(Op("delete", name, t, rdatas=gone))
-        elif o is None:
+        elif o is None:  # a new RRset
             assert n is not None  # a change has at least one side
             adds.append(Op("add", name, t, n.ttl, tuple(n)))
-        elif n is None:
+        elif n is None:  # a deleted RRset
             dels.append(Op("delete", name, t))
         elif o.ttl != n.ttl:
             dels.append(Op("delete", name, t))
             adds.append(Op("add", name, t, n.ttl, tuple(n)))
-        else:
+        else:  # the same TTL: only the records that differ
             if gone := tuple(r for r in o if r not in n):
                 dels.append(Op("delete", name, t, rdatas=gone))
             if added := tuple(r for r in n if r not in o):
@@ -195,6 +215,7 @@ def live_soa(
     RNAME such as hostmaster.example.com. becomes hostmaster), so that its fields
     compare equal to the transferred and edited ones."""
     try:
+        # Signed with the key if there is one, as the transfer is
         q = dns.message.make_query(origin, dns.rdatatype.SOA)
         if server.keyring:
             q.use_tsig(server.keyring, keyname=server.keyname)
@@ -227,6 +248,7 @@ def update_ops(
     (see compute_update()). The SOA is merged with the live zone at the moment
     this is called."""
     dels, adds, final = compute_update(edit, origin)
+    # The SOA is merged with the server's current one, so ask only if it is sent
     live = live_soa(server, origin) if edit.soa_changed else None
     soa, conflicts = changes.soa_to_send(edit.base_soa, edit.new_soa, live)
     ops = compute_prereqs(edit, origin) + dels + adds + soa_update(soa, origin) + final
@@ -236,7 +258,7 @@ def update_ops(
 def op_lines(op: Op, origin: dns.name.Name) -> list[str]:
     """An Op as nsupdate commands."""
     name, t = op.name.to_text(), tname(op.rdtype)
-    rds = [r.to_text(origin=origin, relativize=False) for r in op.rdatas]
+    rds = [r.to_text(origin=origin, relativize=False) for r in op.rdatas]  # absolute names
     if op.kind == "absent":
         return [f"prereq nxrrset {name} IN {t}"]
     if op.kind == "present":
@@ -258,6 +280,8 @@ def update_message(
 ) -> dns.update.UpdateMessage:
     """The UPDATE as a DNS message, signed with TSIG if there is a key."""
     msg = dns.update.UpdateMessage(origin)
+    # dnspython puts each step in the right section with the class and TTL RFC
+    # 2136 prescribes (e.g. class NONE for "RRset does not exist")
     for op in ops:
         if op.kind == "absent":
             msg.absent(op.name, dns.rdatatype.RdataType.make(op.rdtype))
@@ -272,7 +296,9 @@ def update_message(
     return msg
 
 
-UPDATE_TIMEOUT = 60
+UPDATE_TIMEOUT = 60  # seconds for the server's answer to the UPDATE
+# After a timeout or a dropped connection the server may or may not have applied
+# the UPDATE; rebasing finds out, since the prerequisites make it all or nothing
 UNKNOWN_OUTCOME = (
     "unknown whether the update was applied. Rebasing is safe: changes already applied simply drop out."
 )
@@ -308,6 +334,7 @@ def resolve(host: str, port: int) -> str:
     use TCP anyway."""
 
     async def connect() -> str:
+        """Connect, and return the address that answered."""
         _, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port, happy_eyeballs_delay=0.25), timeout=10
         )
