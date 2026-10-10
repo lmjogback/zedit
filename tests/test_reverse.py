@@ -11,7 +11,7 @@ V6_NAME_1 = "1." + "0." * 23 + "8.b.d.0.1.0.0.2.ip6.arpa."
 
 
 def owners(text, origin):
-    m, _ = zonefile.parse_text("$TTL 300\n" + SOA + text, origin)
+    m = zonefile.parse_text("$TTL 300\n" + SOA + text, origin).records
     return {k[0].derelativize(origin).to_text() for k in m}
 
 
@@ -129,12 +129,12 @@ def test_no_addresses_shown_in_in_addr_arpa_itself():
     m, soa, _ = zonefile.to_model(z)
     text = zonefile.render_file(soa, m, origin, "x", addresses=True)
     assert "192.0.2.10 " not in text and "converted to reverse names" not in text
-    m2, _ = zonefile.parse_text(text, origin)
+    m2 = zonefile.parse_text(text, origin).records
     assert set(m2) == set(m)
 
 
 def test_continuation_lines_are_not_owners():
-    m, _ = zonefile.parse_text("$TTL 300\n" + SOA + '10 TXT ( "first"\n192.0.2.99 )\n', REV)
+    m = zonefile.parse_text("$TTL 300\n" + SOA + '10 TXT ( "first"\n192.0.2.99 )\n', REV).records
     ((key, rds),) = m.items()
     assert key[0].to_text() == "10" and rds[0].to_text() == '"first" "192.0.2.99"'
 
@@ -163,7 +163,7 @@ def test_show_addresses_renders_and_round_trips():
     records = [line.split()[0] for line in text.splitlines() if " PTR " in line]
     assert records == ["192.0.2.2", "192.0.2.10", "192.0.2.100"]  # numeric order
     assert any(line.startswith("@ ") and " NS " in line for line in text.splitlines())  # apex stays @
-    m2, _ = zonefile.parse_text(text, REV)
+    m2 = zonefile.parse_text(text, REV).records
     assert set(m2) == set(m)
 
 
@@ -277,7 +277,7 @@ def test_owner_sweep(zone):
             got = "error"
         # ... and end to end, the way an edited file is read
         try:
-            m, _ = zonefile.parse_text(f"$TTL 300\n{SOA}{token} {rtype}\n", origin)
+            m = zonefile.parse_text(f"$TTL 300\n{SOA}{token} {rtype}\n", origin).records
             (name,) = [k[0].derelativize(origin) for k in m]
             if expected == "name":
                 e2e = name == dns.name.from_text(token, origin)

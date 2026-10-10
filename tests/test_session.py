@@ -7,7 +7,7 @@ import dns.exception
 import dns.name
 import dns.zone
 import pytest
-from helpers import ORIGIN, SOA, addrs, model, soa_rd
+from helpers import ORIGIN, SOA, addrs, model, soa_rd, zone
 
 from zedit import cli, rfc2136, session
 from zedit.model import ZeditError
@@ -34,16 +34,16 @@ def verify_with(monkeypatch, results, serials=(), attempts=None):
     monkeypatch.setattr(rfc2136, "fetch", fetch)
     monkeypatch.setattr(rfc2136, "live_soa", lambda ctx: next((soa_rd(f"{n} 1 2 3 4") for n in live), None))
     monkeypatch.setattr(session.time, "sleep", lambda s: None)
-    base, _, _ = model("www A 192.0.2.10\n")
-    new, _, _ = model("www A 192.0.2.11\n")
+    base = zone("www A 192.0.2.10\n")
+    new = zone("www A 192.0.2.11\n")
     return session.verify(None, base, new, attempts=attempts or len(results))
 
 
 def test_verify_transfers_again_only_when_the_serial_moved(monkeypatch):
     """A lasting mismatch (the zone has serial 100): the SOA query shows the zone
     unchanged, so no further transfer, until the serial moves to 101."""
-    unchanged = model("www A 192.0.2.10\n")
-    edited = model("www A 192.0.2.11\n", soa=SOA.replace(" 100 ", " 101 "))
+    unchanged = zone("www A 192.0.2.10\n")
+    edited = zone("www A 192.0.2.11\n", soa=SOA.replace(" 100 ", " 101 "))
     assert verify_with(monkeypatch, [unchanged, edited], serials=[100, 100, 100, 101], attempts=5) == []
     bad = verify_with(monkeypatch, [unchanged], serials=[100] * 9, attempts=10)
     assert bad == ["www A"]  # one transfer for ten attempts
@@ -55,7 +55,7 @@ def test_verify_reports_failed_transfer(monkeypatch):
 
 
 def test_verify_retries_after_failed_transfer(monkeypatch):
-    edited = model("www A 192.0.2.11\n")
+    edited = zone("www A 192.0.2.11\n")
     assert verify_with(monkeypatch, [ZeditError("AXFR failed: timed out"), edited]) == []
 
 
@@ -82,7 +82,7 @@ def test_failing_editor_aborts_or_edits_again(monkeypatch, tmp_path):
     script = tmp_path / "ed.sh"
     script.write_text(f"#!/bin/sh\n[ -e {tmp_path}/ran ] && exit 0\ntouch {tmp_path}/ran\nexit 1\n")
     script.chmod(0o755)
-    m, _ = editor_session(monkeypatch, tmp_path, str(script), ["e"])
+    m = editor_session(monkeypatch, tmp_path, str(script), ["e"]).records
     assert addrs(m, "www") == ["192.0.2.10"]
 
 

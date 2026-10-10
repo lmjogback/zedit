@@ -68,7 +68,7 @@ def test_show_all_renders_read_only_and_round_trips():
     k = next(i for i, x in enumerate(lines) if " DNSKEY " in x)
     assert " RRSIG  DNSKEY " in lines[k + 1]
     # Read-only lines are comments: parsing the file yields exactly the editable model
-    m2, soa2 = zonefile.parse_text(text, ORIGIN)
+    m2 = zonefile.parse_text(text, ORIGIN).records
     assert set(m2) == set(m) and all(same(m[x], m2[x]) for x in m)
 
 
@@ -109,8 +109,8 @@ def test_soa_help_is_comment_only():
     assert ";   REFRESH = 86401" in text and "(1 day and 1 second)" in text
     assert ";   EXPIRE  = 1209600" in text and "(2 weeks)" in text
     assert "contact: hostmaster@example.com" in text
-    m2, soa2 = zonefile.parse_text(text, ORIGIN)
-    assert soa2[0] == soa[0] and set(m2) == set(m)
+    z2 = zonefile.parse_text(text, ORIGIN)
+    assert z2.soa[0] == soa[0] and set(z2.records) == set(m)
 
 
 def test_rname_control_characters_stay_in_the_comment():
@@ -119,14 +119,14 @@ def test_rname_control_characters_stay_in_the_comment():
     m, soa_rds, _ = model("www A 192.0.2.1\n", soa=soa)
     text = zonefile.render_file(soa_rds, m, ORIGIN, "x")
     assert 'contact: x\\010evil TXT "injected"\\013\\226\\128\\168@example.com' in text  # U+2028 too
-    m2, soa2 = zonefile.parse_text(text, ORIGIN)
-    assert soa2[0] == soa_rds[0] and set(m2) == set(m)
+    z2 = zonefile.parse_text(text, ORIGIN)
+    assert z2.soa[0] == soa_rds[0] and set(z2.records) == set(m)
 
 
 def test_origin_directive_inside_zone():
     o = dns.name.from_text("2.0.192.in-addr.arpa.")
     text = "$TTL 300\n" + SOA + "$ORIGIN 2.0.192.in-addr.arpa.\n10 PTR www.example.com.\n"
-    m, _ = zonefile.parse_text(text, o)
+    m = zonefile.parse_text(text, o).records
     assert set(m) == {(dns.name.from_text("10", None), int(dns.rdatatype.PTR))}
 
 
@@ -222,7 +222,7 @@ def test_generate_matches_named_checkzone(tmp_path):
         name, _ttl, cls, rtype, rdata = line.split(None, 4)
         if rtype not in ("SOA", "NS"):
             bind.add(f"{name} {cls} {rtype} {rdata}")
-    m, _ = zonefile.parse_text(zone, REV)
+    m = zonefile.parse_text(zone, REV).records
     ours = {
         f"{n.derelativize(REV)} IN {tname(t)} {rd.to_text(origin=REV, relativize=False)}"
         for (n, t), rds in m.items()
@@ -248,12 +248,12 @@ def test_records_dnspython_would_merge_silently_are_errors(body, match):
 
 
 def test_identical_records_are_not_an_error():
-    m, _ = zonefile.parse_text(
+    m = zonefile.parse_text(
         "$TTL 300\n"
         + SOA
         + "@ NS ns1\nwww CNAME a\nwww CNAME a.example.com.\nmail A 192.0.2.9\nmail A 192.0.2.9\n",
         ORIGIN,
-    )
+    ).records
     assert len(m[key("www", "CNAME")]) == 1 and len(m[key("mail", "A")]) == 1
 
 
@@ -292,7 +292,7 @@ def test_cds_filtered_only_at_the_apex():
 def test_cds_at_the_apex_cannot_be_added():
     with pytest.raises(ValueError, match="CDS/CDNSKEY at the apex"):
         zonefile.parse_text("$TTL 300\n" + SOA + f"@ CDS {CDS_RDATA}\n", ORIGIN)
-    m, _ = zonefile.parse_text("$TTL 300\n" + SOA + f"_dsboot.child.example CDS {CDS_RDATA}\n", ORIGIN)
+    m = zonefile.parse_text("$TTL 300\n" + SOA + f"_dsboot.child.example CDS {CDS_RDATA}\n", ORIGIN).records
     assert key("_dsboot.child.example", "CDS") in m
 
 
@@ -311,7 +311,7 @@ def test_session_files_are_utf8(tmp_path):
     f = tmp_path / "s.zone"
     body = "$TTL 300\n" + SOA + '@ NS ns1\ntxt TXT "R\u00e4ksm\u00f6rg\u00e5s"\n'
     f.write_bytes(body.encode("utf-8"))
-    m, _ = zonefile.parse_file(str(f), ORIGIN, base_soa)
+    m = zonefile.parse_file(str(f), ORIGIN, base_soa).records
     assert m[key("txt", "TXT")][0].strings == ("R\u00e4ksm\u00f6rg\u00e5s".encode(),)
     f.write_bytes(body.encode("latin-1"))
     with pytest.raises(ValueError, match="^line 4: not valid UTF-8 \\(byte 0xe4\\)"):
@@ -336,7 +336,7 @@ def test_non_ascii_names_use_idna_2008():
     """As registries do: under IDNA 2003 (dnspython's default) straße.de would
     become strasse.de, a different domain."""
     text = "$TTL 300\n" + SOA + "@ NS ns1\nr\u00e4ksm\u00f6rg\u00e5s CNAME stra\u00dfe.de.\n"
-    m, _ = zonefile.parse_text(text, ORIGIN)
+    m = zonefile.parse_text(text, ORIGIN).records
     assert zonefile.rr_lines(m, ORIGIN)[1] == "xn--rksmrgs-5wao1o\t300\tIN\tCNAME\txn--strae-oqa.de."
 
 

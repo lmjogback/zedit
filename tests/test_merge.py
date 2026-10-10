@@ -1,5 +1,5 @@
 import pytest
-from helpers import ORIGIN, SOA, addrs, key, model
+from helpers import ORIGIN, SOA, addrs, key, model, zone
 
 from zedit import changes, merge, zonefile
 from zedit.model import tname
@@ -63,17 +63,17 @@ def test_merge_singleton_type_is_a_conflict(base, mine, theirs):
 def test_case_only_changes_are_put_back():
     """DNS names compare case-insensitively: the UPDATE for a case-only change is
     empty, so the diff must not show one either."""
-    base, base_soa, _ = model("www CNAME target\nmail MX 10 Mx\nmail MX 20 mx2\n")
-    new, new_soa, _ = model(
+    base = zone("www CNAME target\nmail MX 10 Mx\nmail MX 20 mx2\n")
+    new = zone(
         "WWW CNAME Target\nmail MX 10 mx\nmail MX 30 mx3\n", soa=SOA.replace("hostmaster", "HostMaster")
     )
-    new, new_soa, recased = merge.keep_base_case(base, base_soa, new, new_soa)
+    new, recased = merge.keep_base_case(base, new)
     assert [f"{k[0]} {tname(k[1])}" for k in recased] == ["@ SOA", "www CNAME", "mail MX"]
-    assert zonefile.rr_lines(new, ORIGIN) == [
+    assert zonefile.rr_lines(new.records, ORIGIN) == [
         "mail\t300\tIN\tMX\t10 Mx",
         "mail\t300\tIN\tMX\t30 mx3",
         "www\t300\tIN\tCNAME\ttarget",
     ]
-    assert str(new_soa[0].rname) == "hostmaster" and not changes.soa_changed(base_soa, new_soa)
-    unchanged, _, none = merge.keep_base_case(base, base_soa, base, base_soa)
+    assert str(new.soa[0].rname) == "hostmaster" and not changes.soa_changed(base.soa, new.soa)
+    unchanged, none = merge.keep_base_case(base, base)
     assert none == [] and unchanged == base

@@ -19,7 +19,7 @@ import dns.update
 import dns.zone
 
 from zedit import changes, zonefile
-from zedit.model import APEX_NS, SOA, ZeditError, die, same, sortkey, tname
+from zedit.model import APEX_NS, SOA, ZeditError, Zone, die, same, sortkey, tname
 
 KEY_STATEMENT = re.compile(r'key\s+"?([^"\s{]+)"?\s*\{(.*?)\}\s*;', re.S)
 
@@ -54,7 +54,7 @@ def fetch(ctx):
     model, soa, hidden = zonefile.to_model(zone)
     if soa is None:
         raise ZeditError("AXFR has no SOA at the apex")
-    return model, soa, hidden
+    return Zone(model, soa, hidden)
 
 
 class Op(NamedTuple):

@@ -5,6 +5,7 @@ import dns.name
 import dns.zone
 
 from zedit import rfc2136, zonefile
+from zedit.model import Zone
 
 ORIGIN = dns.name.from_text("example.com.")
 SOA = "@ 3600 IN SOA ns1 hostmaster 100 7200 900 1209600 300\n"
@@ -14,6 +15,11 @@ def model(body, soa=SOA):
     z = dns.zone.from_text("$TTL 300\n" + soa + body, origin=ORIGIN, relativize=True, check_origin=False)
     m, s, rejected = zonefile.to_model(z)
     return m, s, rejected
+
+
+def zone(body, soa=SOA):
+    """model() as a Zone."""
+    return Zone(*model(body, soa))
 
 
 def key(name, t):
