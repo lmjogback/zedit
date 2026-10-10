@@ -64,16 +64,25 @@ def test_ttl_change_replaces_rrset():
     assert final == []
 
 
-def test_record_count_counts_records_not_rrsets():
-    """The summary before sending counts records, as nsupdate lines did."""
-    old, _, _ = model("www 300 A 192.0.2.1\nold 300 A 192.0.2.9\nmx 300 A 192.0.2.5\n")
+def test_change_count_counts_records_as_the_diff_shows_them():
+    """The summary before sending counts the records the diff adds and removes."""
+    old, _, _ = model(
+        "www 300 A 192.0.2.1\nmx 300 A 192.0.2.5\nttl 300 A 192.0.2.7\nttl 300 A 192.0.2.8\n"
+        "twenties 60 A 127.0.0.20\ntwenties 60 A 127.0.0.21\ntwenties 60 A 127.0.0.22\n"
+    )
     new, _, _ = model(
         "www 300 A 192.0.2.1\nwww 300 A 192.0.2.2\nmx 300 A 192.0.2.6\n"
+        "ttl 60 A 192.0.2.7\nttl 60 A 192.0.2.8\n"
         "tens 60 A 127.0.0.10\ntens 60 A 127.0.0.11\ntens 60 A 127.0.0.12\n"
     )
-    dels, adds, final = cli.compute_update(old, new, ORIGIN)
-    assert cli.record_count(dels + final) == len(lines(dels + final)) == 2  # mx record, old RRset
-    assert cli.record_count(adds) == len(lines(adds)) == 5  # mx, tens x3, www
+    # deleted: mx, ttl x2 (new TTL), twenties x3; added: www, mx, ttl x2, tens x3
+    assert cli.change_count(old, new) == (6, 7)
+    assert cli.change_count(old, old) == (0, 0)
+    old_lines, new_lines = cli.rr_lines(old, ORIGIN), cli.rr_lines(new, ORIGIN)
+    assert cli.change_count(old, new) == (
+        len(set(old_lines) - set(new_lines)),
+        len(set(new_lines) - set(old_lines)),
+    )
 
 
 @pytest.mark.parametrize(

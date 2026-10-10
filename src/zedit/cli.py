@@ -945,10 +945,20 @@ def compute_update(old, new, origin):
     return dels, adds, final
 
 
-def record_count(ops):
-    """How many records the steps add or delete, as in the nsupdate script: a
-    step on several records counts each one, deleting a whole RRset counts one."""
-    return sum(len(op.rdatas) or 1 for op in ops)
+def change_count(old, new):
+    """-> (records deleted, records added), as the diff shows them: a deleted
+    RRset counts each of its records, and so does an RRset whose TTL changes,
+    on both sides."""
+    dels = adds = 0
+    for key in set(old) | set(new):
+        o, n = old.get(key), new.get(key)
+        if o is not None and n is not None and o.ttl == n.ttl:
+            dels += sum(r not in n for r in o)
+            adds += sum(r not in o for r in n)
+        elif not same(o, n):
+            dels += len(o or ())
+            adds += len(n or ())
+    return dels, adds
 
 
 def compute_prereqs(old, new, origin):
@@ -1442,15 +1452,13 @@ def session(ctx, args):
             return 0
 
         dels, adds, final = compute_update(base, new, ctx.origin)
+        n_dels, n_adds = change_count(base, new)
         prereqs = compute_prereqs(base, new, ctx.origin)
         with_soa = soa_changed(base_soa, new_soa)
         plan = (base_soa, new_soa, prereqs, dels, adds, final)
 
         show_diff(old_lines, new_lines, f"{ctx.origin} (serial {base_soa[0].serial})", "edited")
-        print(
-            f"\n{record_count(dels + final)} delete, {record_count(adds)} add"
-            f"{', SOA changed' if with_soa else ''} in 1 atomic UPDATE."
-        )
+        print(f"\n{n_dels} delete, {n_adds} add{', SOA changed' if with_soa else ''} in 1 atomic UPDATE.")
         for w in signal_warnings(base, new) + ascii_warnings(base, new):
             print(f"Warning: {w}")
 

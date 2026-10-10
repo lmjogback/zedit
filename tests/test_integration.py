@@ -361,7 +361,8 @@ def test_serial_update_methods(tmp_path, method, signing):
 
 
 def test_summary_counts_records(server):
-    """Three records in one new RRset are three adds, as on the nsupdate script's lines."""
+    """Three records in one RRset are three adds, and deleting the RRset is three
+    deletes: the summary counts the records the diff shows."""
     port, key, tmp = server
     ed = write_editor(
         tmp,
@@ -370,6 +371,10 @@ def test_summary_counts_records(server):
     r = run_zedit(port, key, tmp, ed, "y\n")
     assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
     assert "0 delete, 3 add in 1 atomic UPDATE." in r.stdout
+    ed = write_editor(tmp, "sed -i '/^tens/d' \"$1\"\n")
+    r = run_zedit(port, key, tmp, ed, "y\n")
+    assert r.returncode == 0 and "Updated and verified." in r.stdout, r.stdout + r.stderr
+    assert "3 delete, 0 add in 1 atomic UPDATE." in r.stdout
 
 
 def test_show_all_is_read_only(server):
