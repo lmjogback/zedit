@@ -1,10 +1,33 @@
 """Three-way merge of the zone as transferred, as edited and as on the server."""
 
+from dataclasses import dataclass
+
 import dns.name
 import dns.rdataset
 import dns.rdatatype
 
-from zedit.model import SOA_EDITABLE, SOA_KEY, Zone, same, tname
+from zedit.model import SOA_EDITABLE, SOA_KEY, Records, RRKey, Zone, same, tname
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    """The merged records; the comment lines to show above each RRset changed
+    on both sides; the RRsets the merge left empty, as text; the number of
+    conflicts (where mine was kept)."""
+
+    records: Records
+    notes: dict[RRKey, list[str]]
+    dropped: list[str]
+    conflicts: int
+
+
+@dataclass(frozen=True)
+class SoaMerge:
+    """The merged SOA, the comment lines on its conflicts and their number."""
+
+    soa: dns.rdataset.Rdataset
+    notes: list[str]
+    conflicts: int
 
 
 def merge_scalar(b, m, t):
@@ -58,7 +81,7 @@ def merge3(base, mine, theirs):
                 notes[k] = note
         if r is not None:
             merged[k] = r
-    return merged, notes, dropped, conflicts
+    return MergeResult(merged, notes, dropped, conflicts)
 
 
 def merge_soa(b, m, t):
@@ -70,7 +93,7 @@ def merge_soa(b, m, t):
             conflicts += 1
             note.append(f"; CONFLICT SOA {f.upper()}: base={bv} server={tv} mine={mv} - mine kept")
     # MNAME, SERIAL and the SOA TTL always come from the server
-    return dns.rdataset.from_rdata(t.ttl, t[0].replace(**fields)), note, conflicts
+    return SoaMerge(dns.rdataset.from_rdata(t.ttl, t[0].replace(**fields)), note, conflicts)
 
 
 def keep_base_case(base, new):

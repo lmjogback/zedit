@@ -54,20 +54,19 @@ def rebase(ctx, base, mine):
     """Transfer the zone again and merge mine into it, writing the session file
     and its base. -> (the new base, number of conflicts)."""
     theirs = rfc2136.fetch(ctx)
-    merged, notes, dropped, conflicts = merge.merge3(base.records, mine.records, theirs.records)
-    msoa, snote, sconf = merge.merge_soa(base.soa, mine.soa, theirs.soa)
-    if snote:
-        notes[SOA_KEY] = snote
-    conflicts += sconf
+    merged = merge.merge3(base.records, mine.records, theirs.records)
+    soa = merge.merge_soa(base.soa, mine.soa, theirs.soa)
+    notes = {**merged.notes, SOA_KEY: soa.notes} if soa.notes else merged.notes
+    conflicts = merged.conflicts + soa.conflicts
     extra = [f"; Rebased: serial {base.soa[0].serial} -> {theirs.soa[0].serial}."]
-    extra += [f"; Removed by merge (empty RRset): {d}" for d in dropped]
+    extra += [f"; Removed by merge (empty RRset): {d}" for d in merged.dropped]
     write_pair(
         (
             (
                 ctx.path,
                 zonefile.render_file(
-                    msoa,
-                    merged,
+                    soa.soa,
+                    merged.records,
                     ctx.origin,
                     ctx.label,
                     notes,
@@ -81,7 +80,7 @@ def rebase(ctx, base, mine):
     )
     print(
         f"Rebased onto serial {theirs.soa[0].serial}: {len(notes)} RRset(s) changed on "
-        f"both sides, {conflicts} conflict(s), {len(dropped)} removed."
+        f"both sides, {conflicts} conflict(s), {len(merged.dropped)} removed."
     )
     return theirs, conflicts
 
