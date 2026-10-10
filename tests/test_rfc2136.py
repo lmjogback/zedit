@@ -1,3 +1,9 @@
+"""The RFC 2136 backend: the steps of the UPDATE and their order, the
+prerequisites that lock what the edit touches, the message and the nsupdate
+script made from the steps, the outcomes of sending, TSIG key files, and
+finding and reaching the server. The steps are compared as nsupdate commands
+(helpers.lines()), which read like the script --dry-run shows."""
+
 import socket
 
 import pytest
@@ -9,6 +15,10 @@ from zedit.model import ZeditError
 
 
 def test_compute_update_minimal_and_ordered():
+    """Only the records that change are sent: www keeps .1, loses .2 and gains
+    .3. foo's A RRset is deleted before its CNAME is added: the server applies
+    the steps in order, and ignores a CNAME added where other data still is
+    (RFC 2136 §3.4.2.2)."""
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\nfoo A 192.0.2.9\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nfoo CNAME www\n")
     dels, adds, final = rfc2136.compute_update(changeset(old, new), ORIGIN)
@@ -23,6 +33,8 @@ def test_compute_update_minimal_and_ordered():
 
 
 def test_ttl_change_replaces_rrset():
+    """A TTL belongs to the whole RRset, so changing it deletes the RRset and
+    adds it again with the new TTL."""
     old, _, _ = model("www 300 A 192.0.2.1\n")
     new, _, _ = model("www 60 A 192.0.2.1\n")
     dels, adds, final = rfc2136.compute_update(changeset(old, new), ORIGIN)
@@ -57,6 +69,8 @@ def test_apex_ns_added_before_deleted(old_ns, new_ns, adds, final):
 
 
 def test_soa_update_bumps_serial_and_wraps():
+    """The serial after 4294967295 is 0 (RFC 1982); an SOA that isn't changed
+    isn't sent, and doesn't need the server's current one (None)."""
     _, old, _ = model("", soa="@ 3600 IN SOA ns1 hm 4294967295 7200 900 1209600 300\n")
     _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 4294967295 7200 900 1209600 60\n")
     soa, conflicts = changes.soa_to_send(old, new, old)
@@ -67,6 +81,9 @@ def test_soa_update_bumps_serial_and_wraps():
 
 
 def test_prereqs_only_on_touched_rrsets():
+    """Each RRset the UPDATE changes must still be exactly as transferred (www,
+    gone) or still absent (new); mail isn't touched, so it isn't checked, and a
+    concurrent change to it doesn't make the UPDATE fail."""
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\nmail A 192.0.2.9\ngone TXT x\n")
     new, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.3\nmail A 192.0.2.9\nnew A 192.0.2.4\n")
     assert sorted(lines(rfc2136.compute_prereqs(changeset(old, new), ORIGIN))) == [
@@ -78,6 +95,7 @@ def test_prereqs_only_on_touched_rrsets():
 
 
 def test_primary_from_mname(monkeypatch):
+    """Without -s, the server is the SOA MNAME, looked up with the system resolver."""
     _, soa, _ = model("", soa="@ 3600 IN SOA ns1.example.net. hm 1 2 3 4 5\n")
     monkeypatch.setattr(rfc2136.dns.resolver, "resolve", lambda *a, **kw: soa)
     assert rfc2136.primary_from_mname(ORIGIN) == "ns1.example.net."
@@ -93,6 +111,9 @@ def listener():
 
 
 def test_resolve_falls_back_to_a_reachable_address(monkeypatch, listener):
+    """A server whose first address doesn't answer is still reached on the next
+    one (Happy Eyeballs), and that address is used for the whole session."""
+
     # IPv6 first, as for a server with an AAAA record, but nothing answers there
     def getaddrinfo(host, port, *args, **kwargs):
         return [
@@ -105,6 +126,7 @@ def test_resolve_falls_back_to_a_reachable_address(monkeypatch, listener):
 
 
 def test_resolve_fails_when_nothing_answers():
+    """An unreachable server is a plain error, before anything else happens."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         closed = s.getsockname()[1]  # bound but not listening: refused
@@ -112,10 +134,12 @@ def test_resolve_fails_when_nothing_answers():
             rfc2136.resolve("127.0.0.1", closed)
 
 
+# A key file as tsig-keygen writes it
 KEY = 'key "{name}" {{\n\talgorithm hmac-sha256;\n\tsecret "c2VjcmV0c2VjcmV0c2VjcmV0";\n}};\n'
 
 
 def test_key_file_with_one_key(tmp_path):
+    """The key's name in the file is the name it signs with."""
     f = tmp_path / "admin.key"
     f.write_text(KEY.format(name="admin"))
     keyring, keyname = rfc2136.load_bind_key(str(f))
@@ -189,6 +213,7 @@ def test_update_message_sections():
 
 
 def test_update_message_is_signed_with_the_key():
+    """The UPDATE is signed with the same key as the transfer."""
     keyring = rfc2136.dns.tsigkeyring.from_text({"admin": ("hmac-sha256", "c2VjcmV0c2VjcmV0c2VjcmV0")})
     msg = rfc2136.update_message(ORIGIN, plan_ops(), keyring, rfc2136.dns.name.from_text("admin"))
     msg.to_wire()  # signs
@@ -196,6 +221,8 @@ def test_update_message_is_signed_with_the_key():
 
 
 def test_script_text_matches_the_ops():
+    """The script --dry-run shows is a complete nsupdate script: server, zone,
+    the steps, send. It can be sent by hand with nsupdate -k."""
     script = rfc2136.script_text("192.0.2.53", 53, ORIGIN, plan_ops())
     assert script.splitlines()[:2] == ["server 192.0.2.53 53", "zone example.com."]
     assert script.splitlines()[-1] == "send"
@@ -233,6 +260,9 @@ def send_with(monkeypatch, outcome):
     ],
 )
 def test_send_update_outcomes(monkeypatch, outcome, expected, text):
+    """How each answer, or failure to get one, is reported. NXRRSET/YXRRSET (a
+    prerequisite failed) and a lost answer (it may or may not have been applied)
+    offer a rebase; a refusal or a TSIG error doesn't, as rebasing won't help."""
     result = send_with(monkeypatch, outcome)
     assert result.outcome is expected and text in result.message
 
@@ -269,5 +299,6 @@ def test_invalid_key_is_an_error(tmp_path, algorithm, secret, match):
 
 
 def test_unreadable_key_file_is_an_error(tmp_path):
+    """A key file that can't be read is a plain error, not a traceback."""
     with pytest.raises(ZeditError, match="cannot read key file"):
         rfc2136.load_bind_key(str(tmp_path))  # a directory

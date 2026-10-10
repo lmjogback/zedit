@@ -1,3 +1,6 @@
+"""The three-way merge used by a rebase: base (as transferred), mine (as
+edited) and theirs (the zone on the server now)."""
+
 import pytest
 from helpers import ORIGIN, SOA, addrs, key, model, zone
 
@@ -6,6 +9,8 @@ from zedit.model import tname
 
 
 def test_merge_disjoint_changes():
+    """I changed a, the server changed b and added c: the result has all three
+    changes, with nothing to review."""
     base, _, _ = model("a A 192.0.2.1\nb A 192.0.2.2\n")
     mine, _, _ = model("a A 192.0.2.11\nb A 192.0.2.2\n")
     theirs, _, _ = model("a A 192.0.2.1\nb A 192.0.2.22\nc A 192.0.2.3\n")
@@ -17,6 +22,9 @@ def test_merge_disjoint_changes():
 
 
 def test_merge_same_rrset_both_sides_with_ttl_conflict():
+    """Both sides changed www: I replaced .11 with .12 and set TTL 60, the
+    server added .13 and set TTL 900. The records merge (.12 and .13, .11 is
+    gone); the TTLs conflict, so mine is kept and the RRset is marked."""
     base, _, _ = model("www 300 A 192.0.2.11\n")
     mine, _, _ = model("www 60 A 192.0.2.12\n")
     theirs, _, _ = model("www 900 A 192.0.2.11\nwww 900 A 192.0.2.13\n")
@@ -27,6 +35,8 @@ def test_merge_same_rrset_both_sides_with_ttl_conflict():
 
 
 def test_merge_already_applied_is_noop():
+    """The server already has my change (e.g. the UPDATE did get through before
+    a timeout): it merges cleanly, without a conflict."""
     base, _, _ = model("a A 192.0.2.1\n")
     mine, _, _ = model("a A 192.0.2.2\n")
     r = merge.merge3(base, mine, mine)
@@ -34,6 +44,8 @@ def test_merge_already_applied_is_noop():
 
 
 def test_merge_soa_fieldwise():
+    """The SOA merges field by field: my RNAME and the server's REFRESH both
+    stay; the serial is always the server's."""
     _, b, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 300\n")
     _, m, _ = model("", soa="@ 3600 IN SOA ns1 admin 100 7200 900 1209600 300\n")
     _, t, _ = model("", soa="@ 3600 IN SOA ns1 hm 105 3600 900 1209600 300\n")
