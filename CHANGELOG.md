@@ -6,6 +6,9 @@
   UPDATE itself with dnspython, signed with the same TSIG key it uses for the
   transfer. `--dry-run` and `[s]cript` still show the update as an `nsupdate`
   script, which can be sent by hand.
+- Fix: the "N delete, M add" summary before sending counted a deleted RRset,
+  or one whose TTL changed, as one delete however many records it held. It
+  now counts the records the diff removes and adds.
 - Fix: changing the SOA put back the MNAME and SOA TTL from the transfer, so a
   change to either made on the server while you were editing was reverted, and
   the update was still reported as verified. They are now taken from the
