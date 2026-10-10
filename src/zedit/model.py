@@ -11,18 +11,29 @@ SOA = int(dns.rdatatype.SOA)
 CNAME = int(dns.rdatatype.CNAME)
 NS = int(dns.rdatatype.NS)
 RRSIG = int(dns.rdatatype.RRSIG)
-# RRSIG, NSEC, DNSKEY, NSEC3, NSEC3PARAM, ZONEMD, BIND private (signing state)
-FILTERED = {46, 47, 48, 50, 51, 63, 65534}
+BIND_PRIVATE = 65534  # BIND's signing state (sig-signing-type); dnspython has no name for it
+# DNSSEC records and BIND's signing state, all maintained by the server
+FILTERED = {
+    int(t)
+    for t in (
+        dns.rdatatype.RRSIG,
+        dns.rdatatype.NSEC,
+        dns.rdatatype.DNSKEY,
+        dns.rdatatype.NSEC3,
+        dns.rdatatype.NSEC3PARAM,
+        dns.rdatatype.ZONEMD,
+    )
+} | {BIND_PRIVATE}
 # CDS, CDNSKEY: maintained by the server at the apex. Below it they are ordinary
 # records, e.g. RFC 9615 bootstrapping signals at _dsboot.CHILD._signal.NS-HOST.
-FILTERED_AT_APEX = {59, 60}
+FILTERED_AT_APEX = {int(dns.rdatatype.CDS), int(dns.rdatatype.CDNSKEY)}
 # Names written with non-ASCII letters (räksmörgås) are encoded with IDNA 2008, as
 # registries do. dnspython's default is IDNA 2003, which maps e.g. straße to
 # strasse, a different domain (IDNA 2008: xn--strae-oqa).
 IDNA = dns.name.IDNA_2008
 SIGNAL_LABEL = b"_dsboot"
 # Omitted from --show-all by --no-rrsig: the bulky, constantly changing ones
-NOISY = {46, 47, 50}  # RRSIG, NSEC, NSEC3
+NOISY = {int(dns.rdatatype.RRSIG), int(dns.rdatatype.NSEC), int(dns.rdatatype.NSEC3)}
 SOA_EDITABLE = ("rname", "refresh", "retry", "expire", "minimum")
 LOCKED_SOA = ("mname", "serial")  # and the SOA record's own TTL
 
