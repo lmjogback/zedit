@@ -353,60 +353,102 @@ def show_preview(preview):
         print(f"Warning: {changes.soa_conflict_message(preview.soa_conflicts)} Sending would offer a rebase.")
 
 
+def next_edit(opts, files, base, need_edit):
+    """The edited zone, from the editor; with need_edit False first from the
+    session file as it is (after a rebase without conflicts). None if the user
+    aborts."""
+    if not need_edit:
+        try:
+            return zonefile.parse_file(files.path, opts.origin, base.soa)
+        except (dns.exception.DNSException, ValueError) as e:
+            print(f"Error: {e}")
+    return edit_until_valid(files.path, opts.origin, base.soa)
+
+
+def put_back_case(base, new):
+    """new with case-only changes put back (see merge.keep_base_case()), saying so."""
+    new, recased = merge.keep_base_case(base, new)
+    if recased:
+        print(
+            "Letter case in DNS names is not significant, so case-only changes are not sent: "
+            + ", ".join(f"{k.name} {tname(k.rdtype)}" for k in recased)
+        )
+    return new
+
+
+def review(opts, backend, base, new, edit):
+    """Show the diff, a summary and warnings, and ask what to do; [s]cript shows
+    what would be sent. -> the answer ("y", "e", "n" or "" for no), or None if
+    the edit makes no difference."""
+    old_lines = [zonefile.soa_line(base.soa, opts.origin)] + zonefile.rr_lines(
+        base.records, opts.origin, addresses=opts.addresses
+    )
+    new_lines = [zonefile.soa_line(new.soa, opts.origin)] + zonefile.rr_lines(
+        new.records, opts.origin, addresses=opts.addresses
+    )
+    if old_lines == new_lines:
+        return None
+    n_dels, n_adds = changes.change_count(edit)
+    show_diff(old_lines, new_lines, f"{opts.origin} (serial {base.soa[0].serial})", "edited")
+    soa_note = ", SOA changed" if edit.soa_changed else ""
+    print(f"\n{n_dels} delete, {n_adds} add{soa_note} in 1 atomic UPDATE.")
+    warnings = changes.signal_warnings(base.records, new.records)
+    warnings += changes.ascii_warnings(base.records, new.records)
+    for w in warnings:
+        print(f"Warning: {w}")
+    while True:
+        a = ask("Send? [y]es / [N]o / [e]dit / [s]cript: ", {"y", "n", "e", "s"})
+        if a != "s":
+            return a
+        show_preview(backend.preview(opts.origin, edit))
+
+
+def send_and_verify(opts, backend, files, edit):
+    """Apply the edit and verify it. -> exit status, or None to rebase (the
+    user's choice when the backend says a rebase may help)."""
+    result = backend.apply(opts.origin, edit)
+    if result.outcome is Outcome.OK:
+        if result.message:
+            print(result.message)
+        missing = verify(backend, opts.origin, edit, result.soa)
+        if missing:
+            print(
+                "Update accepted, but could not be verified:\n  "
+                + "\n  ".join(missing)
+                + "\nCheck the server log (e.g. CNAME conflicts, dnssec-policy max-zone-ttl).",
+                file=sys.stderr,
+            )
+            return 3
+        print("Updated and verified.")
+        cleanup(files)
+        return 0
+    print(result.message, file=sys.stderr)
+    if result.outcome is not Outcome.REBASE:
+        return 2
+    if ask("[r]ebase onto current zone / [a]bort? ", {"r", "a"}) != "r":
+        return 2
+    return None
+
+
 def edit_loop(opts, backend, args, files, base, need_edit):
     """Edit, review and send until done. -> exit status."""
     while True:
-        if need_edit:
-            new = edit_until_valid(files.path, opts.origin, base.soa)
-            if new is None:
-                if discard_if_unchanged(files, opts.origin, base):
-                    print("Aborted without changes.")
-                return 1
-        else:
-            try:
-                new = zonefile.parse_file(files.path, opts.origin, base.soa)
-            except (dns.exception.DNSException, ValueError) as e:
-                print(f"Error: {e}")
-                need_edit = True
-                continue
+        new = next_edit(opts, files, base, need_edit)
+        if new is None:
+            if discard_if_unchanged(files, opts.origin, base):
+                print("Aborted without changes.")
+            return 1
         need_edit = True
-
-        new, recased = merge.keep_base_case(base, new)
-        if recased:
-            print(
-                "Letter case in DNS names is not significant, so case-only changes are not sent: "
-                + ", ".join(f"{k.name} {tname(k.rdtype)}" for k in recased)
-            )
-        old_lines = [zonefile.soa_line(base.soa, opts.origin)] + zonefile.rr_lines(
-            base.records, opts.origin, addresses=opts.addresses
-        )
-        new_lines = [zonefile.soa_line(new.soa, opts.origin)] + zonefile.rr_lines(
-            new.records, opts.origin, addresses=opts.addresses
-        )
-        if old_lines == new_lines:
+        new = put_back_case(base, new)
+        edit = changes.change_set(base, new)
+        answer = review(opts, backend, base, new, edit)
+        if answer is None:
             print("No differences from the server - nothing to send.")
             cleanup(files)
             return 0
-
-        edit = changes.change_set(base, new)
-        n_dels, n_adds = changes.change_count(edit)
-
-        show_diff(old_lines, new_lines, f"{opts.origin} (serial {base.soa[0].serial})", "edited")
-        soa_note = ", SOA changed" if edit.soa_changed else ""
-        print(f"\n{n_dels} delete, {n_adds} add{soa_note} in 1 atomic UPDATE.")
-        warnings = changes.signal_warnings(base.records, new.records)
-        warnings += changes.ascii_warnings(base.records, new.records)
-        for w in warnings:
-            print(f"Warning: {w}")
-
-        while True:
-            a = ask("Send? [y]es / [N]o / [e]dit / [s]cript: ", {"y", "n", "e", "s"})
-            if a != "s":
-                break
-            show_preview(backend.preview(opts.origin, edit))
-        if a == "e":
+        if answer == "e":
             continue
-        if a != "y":
+        if answer != "y":
             print("Nothing sent.")
             return 2
         if args.dry_run:
@@ -414,27 +456,8 @@ def edit_loop(opts, backend, args, files, base, need_edit):
             print("Nothing sent (--dry-run).")
             hint(files, args, dry_run=True)
             return 0
-
-        result = backend.apply(opts.origin, edit)
-        if result.outcome is Outcome.OK:
-            if result.message:
-                print(result.message)
-            missing = verify(backend, opts.origin, edit, result.soa)
-            if missing:
-                print(
-                    "Update accepted, but could not be verified:\n  "
-                    + "\n  ".join(missing)
-                    + "\nCheck the server log (e.g. CNAME conflicts, dnssec-policy max-zone-ttl).",
-                    file=sys.stderr,
-                )
-                return 3
-            print("Updated and verified.")
-            cleanup(files)
-            return 0
-        print(result.message, file=sys.stderr)
-        if result.outcome is not Outcome.REBASE:
-            return 2
-        if ask("[r]ebase onto current zone / [a]bort? ", {"r", "a"}) != "r":
-            return 2
+        rc = send_and_verify(opts, backend, files, edit)
+        if rc is not None:
+            return rc
         base, conflicts = rebase(opts, backend, files, base, new)
         need_edit = conflicts > 0  # conflicts -> straight to the editor, otherwise diff first
