@@ -355,6 +355,11 @@ def run(opts: Options, backend: Backend, args: argparse.Namespace) -> int:
     except (ZeditError, OSError) as e:  # OSError: e.g. state directory not writable, disk full
         print(f"zedit: {e}", file=sys.stderr)
         rc = 1
+    except Exception:
+        # A bug: the traceback follows, but the edit may be worth keeping, and
+        # the UPDATE may have been sent already
+        hint(files, args)
+        raise
     if rc:
         hint(files, args)
     return rc

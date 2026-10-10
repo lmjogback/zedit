@@ -11,7 +11,7 @@ import pytest
 from helpers import ORIGIN, SOA, addrs, model, soa_rd, zone
 
 from zedit import changes, cli, session
-from zedit.model import ZeditError
+from zedit.model import Options, ZeditError
 
 
 def test_file_stem_is_a_safe_file_name():
@@ -187,3 +187,21 @@ def test_ctrl_c_in_the_editor_doesnt_stop_zedit(tmp_path):
     )
     # The editor died of SIGINT (status -2, default handling); zedit carried on
     assert (r.returncode, r.stdout, r.stderr) == (0, "-2\n", "")
+
+
+def test_unexpected_error_still_says_where_the_session_is(tmp_path, monkeypatch, capsys):
+    """A bug after the session was written: the exception is not swallowed,
+    and the user still learns how to resume."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    base = zone("www A 192.0.2.10\n")
+    backend = SimpleNamespace(label="ns", fetch=lambda origin: base)
+
+    def bug(*args):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(session, "edit_loop", bug)
+    args = cli.make_parser().parse_args(["example.com"])
+    with pytest.raises(RuntimeError, match="bug"):
+        session.run(Options(ORIGIN), backend, args)
+    err = capsys.readouterr().err
+    assert "Your changes are saved in" in err and "Resume with: zedit --resume" in err
