@@ -1,12 +1,15 @@
 """Three-way merge of the zone as transferred, as edited and as on the server."""
 
 from dataclasses import dataclass
+from typing import TypeVar
 
 import dns.name
 import dns.rdataset
 import dns.rdatatype
 
-from zedit.model import SOA_EDITABLE, SOA_KEY, Records, RRKey, Zone, same, tname
+from zedit.model import SOA_EDITABLE, SOA_KEY, Notes, Records, RRKey, Zone, same, tname
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -16,7 +19,7 @@ class MergeResult:
     conflicts (where mine was kept)."""
 
     records: Records
-    notes: dict[RRKey, list[str]]
+    notes: Notes
     dropped: list[str]
     conflicts: int
 
@@ -30,7 +33,7 @@ class SoaMerge:
     conflicts: int
 
 
-def merge_scalar(b, m, t):
+def merge_scalar(b: T | None, m: T, t: T) -> tuple[T, bool]:
     """-> (value, conflict?). On conflict, mine wins."""
     if m == b:
         return t, False
@@ -39,7 +42,7 @@ def merge_scalar(b, m, t):
     return m, True
 
 
-def merge3(base, mine, theirs):
+def merge3(base: Records, mine: Records, theirs: Records) -> MergeResult:
     """Per RRset: unchanged by me -> theirs; unchanged on the server -> mine;
     changed on both sides -> rdata set merge: theirs + my additions - my deletions,
     except for single-record types (CNAME etc.), where two values are a conflict."""
@@ -55,6 +58,7 @@ def merge3(base, mine, theirs):
             rd = (ts | (ms - bs)) - (bs - ms)
             note = ["; MERGED: changed both by you and on the server - please review"]
             if m is None:
+                assert t is not None  # else same(m, t)
                 ttl = t.ttl
             elif t is None:
                 ttl = m.ttl
@@ -65,9 +69,11 @@ def merge3(base, mine, theirs):
                     note.append(
                         f"; CONFLICT TTL: base={b.ttl if b else '-'} server={t.ttl} mine={m.ttl} - mine kept"
                     )
-            if len(rd) > 1 and dns.rdatatype.is_singleton(k.rdtype):
+            if len(rd) > 1 and dns.rdatatype.is_singleton(dns.rdatatype.RdataType.make(k.rdtype)):
                 # CNAME, DNAME etc. hold a single record, so two values can't be
-                # merged as a union (dnspython would keep one, in hash order)
+                # merged as a union (dnspython would keep one, in hash order).
+                # Both sides have one, or rd couldn't hold two.
+                assert m is not None and t is not None
                 conflicts += 1
                 note.append(
                     f"; CONFLICT {tname(k.rdtype)}: base={b[0].to_text() if b else '-'} "
@@ -84,7 +90,7 @@ def merge3(base, mine, theirs):
     return MergeResult(merged, notes, dropped, conflicts)
 
 
-def merge_soa(b, m, t):
+def merge_soa(b: dns.rdataset.Rdataset, m: dns.rdataset.Rdataset, t: dns.rdataset.Rdataset) -> SoaMerge:
     fields, note, conflicts = {}, [], 0
     for f in SOA_EDITABLE:
         bv, mv, tv = getattr(b[0], f), getattr(m[0], f), getattr(t[0], f)
@@ -96,7 +102,7 @@ def merge_soa(b, m, t):
     return SoaMerge(dns.rdataset.from_rdata(t.ttl, t[0].replace(**fields)), note, conflicts)
 
 
-def keep_base_case(base, new):
+def keep_base_case(base: Zone, new: Zone) -> tuple[Zone, list[RRKey]]:
     """DNS names compare case-insensitively, so a change of letter case alone
     (www CNAME Target for target) is no change to the server: the UPDATE would
     leave the record as it is. Owner names, records and SOA names equal to ones

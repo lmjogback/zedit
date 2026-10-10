@@ -2,12 +2,17 @@
 
 import ipaddress
 import re
+from collections.abc import Callable, Iterable
+from typing import Any
 
 import dns.exception
 import dns.name
+import dns.rdata
 import dns.rdataclass
+import dns.rdataset
 import dns.rdatatype
 import dns.tokenizer
+import dns.transaction
 import dns.zone
 import dns.zonefile
 
@@ -22,7 +27,11 @@ from zedit.model import (
     NOISY,
     SOA,
     SOA_KEY,
+    Hidden,
     HiddenKey,
+    Notes,
+    Options,
+    Records,
     RRKey,
     Zone,
     display_key,
@@ -30,11 +39,11 @@ from zedit.model import (
 )
 
 
-def is_filtered(name, t):
+def is_filtered(name: dns.name.Name, t: int) -> bool:
     return t in FILTERED or (t in FILTERED_AT_APEX and name == dns.name.empty)
 
 
-def to_model(zone):
+def to_model(zone: dns.zone.Zone) -> tuple[Records, dns.rdataset.Rdataset | None, Hidden]:
     """-> (model, apex SOA, rejected).
 
     model:    Records, without SOA and filtered types
@@ -56,11 +65,12 @@ class _Reader(dns.zonefile.Reader):
     outside the zone (e.g. after a $ORIGIN pointing elsewhere); _eat_line() is
     called only on that path. Record the names so they can be reported."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.outside = []
+        self.outside: list[dns.name.Name] = []
 
-    def _eat_line(self):
+    def _eat_line(self) -> None:
+        assert self.last_name is not None  # the reader drops a line after reading its owner
         self.outside.append(self.last_name)
         super()._eat_line()
 
@@ -71,7 +81,7 @@ class _Tokenizer(dns.tokenizer.Tokenizer):
     an error in a record's last field (www A 999.1.1.1) was reported on the
     line after it."""
 
-    def where(self):
+    def where(self) -> tuple[str, int]:
         filename, line = super().where()
         return filename, line - (self.ungotten_char == "\n")
 
@@ -83,14 +93,15 @@ class _StrictAdds:
     reported instead, with the line in the tokenizer's text (which must end with
     a newline: the reader has read a record's end of line when it adds it)."""
 
-    def __init__(self, txn, tok):
+    def __init__(self, txn: dns.transaction.Transaction, tok: dns.tokenizer.Tokenizer) -> None:
         self._txn, self._tok = txn, tok
-        self._first = {}  # (name, rdtype, covers) -> (ttl, rdata) of its first line
+        # (name, rdtype, covers) -> (ttl, rdata) of its first line
+        self._first: dict[tuple[dns.name.Name, int, int], tuple[int, dns.rdata.Rdata]] = {}
 
-    def __getattr__(self, attr):
+    def __getattr__(self, attr: str) -> Any:
         return getattr(self._txn, attr)
 
-    def add(self, name, ttl, rd):
+    def add(self, name: dns.name.Name, ttl: int, rd: dns.rdata.Rdata) -> None:
         k = (name, rd.rdtype, rd.covers())
         if k in self._first:
             first_ttl, first_rd = self._first[k]
@@ -116,7 +127,7 @@ GENERATE_TOKEN = re.compile(r"\\.|\$\{([^}]*)\}|\$")
 GENERATE_MAX = 65536
 
 
-def nibbles(value, width, mode):
+def nibbles(value: int, width: int, mode: str) -> str:
     """BIND's ${offset,width,n|N}: hex digits, least significant first, separated
     by dots (for ip6.arpa); width counts output characters including dots."""
     digits = "0123456789abcdef" if mode == "n" else "0123456789ABCDEF"
@@ -132,11 +143,11 @@ def nibbles(value, width, mode):
             return "".join(out)
 
 
-def generate_substitute(template, i):
+def generate_substitute(template: str, i: int) -> str:
     """Expand '$', '${offset[,width[,base]]}' in a $GENERATE template, as BIND does.
     Backslash escapes (e.g. '\\$' for a literal '$') are left for the zone parser."""
 
-    def repl(m):
+    def repl(m: re.Match[str]) -> str:
         token = m.group(0)
         if token.startswith("\\"):
             return token
@@ -160,7 +171,7 @@ def generate_substitute(template, i):
     return GENERATE_TOKEN.sub(repl, template)
 
 
-def expand_generate(text):
+def expand_generate(text: str) -> tuple[str, list[int]]:
     """Replace $GENERATE lines with the records they generate, following BIND
     (several '$' and modifiers per side; dnspython's own expansion handles only
     one modifier and silently leaves the rest as text).
@@ -187,11 +198,11 @@ def expand_generate(text):
     return "\n".join(out), linemap
 
 
-def read_zone(text, origin):
+def read_zone(text: str, origin: dns.name.Name) -> tuple[dns.zone.Zone, list[str]]:
     """-> (zone, names outside the zone that the reader dropped)."""
     expanded, linemap = expand_generate(text)
 
-    def users_line(e):
+    def users_line(e: Exception) -> Exception:
         """The error with the line in the user's file, not in the expanded text."""
         m = re.match(r"line (\d+): (.*)", str(e), re.S)
         if m and int(m.group(1)) <= len(linemap):
@@ -228,7 +239,7 @@ def read_zone(text, origin):
     return zone, sorted({n.to_text() for n in reader.outside})
 
 
-def parse_text(text, origin):
+def parse_text(text: str, origin: dns.name.Name) -> Zone:
     z, outside = read_zone(text, origin)
     if outside:
         raise ValueError(f"names outside the zone {origin} (check $ORIGIN): {', '.join(outside)}")
@@ -241,7 +252,7 @@ def parse_text(text, origin):
     return Zone(m, soa)
 
 
-def check_cname(m):
+def check_cname(m: Records) -> None:
     """BIND *silently* ignores adds that violate the CNAME rule (RFC 2136 §3.4.2.2),
     so this must be caught here rather than relying on the server."""
     types: dict[dns.name.Name, set[int]] = {}
@@ -254,7 +265,7 @@ def check_cname(m):
         raise ValueError("CNAME together with other data: " + ", ".join(bad))
 
 
-def read_text(path):
+def read_text(path: str) -> str:
     """A session file's text. Always UTF-8, whatever the locale, so that what
     you type reads the same everywhere."""
     with open(path, "rb") as f:
@@ -268,7 +279,7 @@ def read_text(path):
         ) from None
 
 
-def parse_file(path, origin, base_soa):
+def parse_file(path: str, origin: dns.name.Name, base_soa: dns.rdataset.Rdataset) -> Zone:
     """The edited zone in path, checked against the SOA as transferred."""
     zone = parse_text(read_text(path), origin)
     m, soa = zone.records, zone.soa
@@ -285,7 +296,7 @@ def parse_file(path, origin, base_soa):
     return zone
 
 
-def owner_text(name, origin, addresses):
+def owner_text(name: dns.name.Name, origin: dns.name.Name, addresses: bool) -> str:
     """The owner as written in the file: the relative name, or with --addresses
     in a reverse zone the IP address (the apex stays '@')."""
     if addresses and reverse.address_owners(origin) and name != dns.name.empty:
@@ -295,12 +306,12 @@ def owner_text(name, origin, addresses):
     return name.to_text()
 
 
-def sort_key(origin, addresses):
+def sort_key(origin: dns.name.Name, addresses: bool) -> Callable[[RRKey | HiddenKey], tuple[Any, ...]]:
     """display_key, but with --addresses records are ordered by address."""
     if not (addresses and reverse.address_owners(origin)):
         return display_key
 
-    def key(k):
+    def key(k: RRKey | HiddenKey) -> tuple[Any, ...]:
         name, t, flag = display_key(k)
         address = reverse.name_to_address(name, origin) if name != dns.name.empty else None
         if address:
@@ -311,18 +322,29 @@ def sort_key(origin, addresses):
     return key
 
 
-def rr_lines(m, origin, pad=0, notes=None, hidden=None, addresses=False):
+def rr_lines(
+    m: Records,
+    origin: dns.name.Name,
+    pad: int = 0,
+    notes: Notes | None = None,
+    hidden: Hidden | None = None,
+    addresses: bool = False,
+) -> list[str]:
     """Zone file lines for model m. With hidden (a rejected dict from to_model),
     those records are interleaved as ';ro' comment lines: shown, never parsed.
     With addresses, reverse-zone owners are shown as IP addresses."""
     out = []
     hidden = hidden or {}
-    for key in sorted([*m, *hidden], key=sort_key(origin, addresses)):
-        ro = key in hidden
+    keys: list[RRKey | HiddenKey] = [*m, *hidden]
+    for key in sorted(keys, key=sort_key(origin, addresses)):
+        ro = isinstance(key, HiddenKey)
         name, t = key.name, key.rdtype
-        rds = hidden[key] if ro else m[key]
-        if notes and key in notes:
-            out += notes[key]
+        if isinstance(key, HiddenKey):
+            rds = hidden[key]
+        else:
+            rds = m[key]
+            if notes and key in notes:
+                out += notes[key]
         n = owner_text(name, origin, addresses)
         prefix = ";ro " if ro else ""
         for rd in sorted(rds, key=lambda r: r.to_text(origin=origin, relativize=True)):
@@ -337,7 +359,7 @@ def rr_lines(m, origin, pad=0, notes=None, hidden=None, addresses=False):
 DURATION_UNITS = (("week", 604800), ("day", 86400), ("hour", 3600), ("minute", 60), ("second", 1))
 
 
-def human_duration(seconds):
+def human_duration(seconds: int) -> str:
     """86401 -> '1 day and 1 second', 1209600 -> '2 weeks'."""
     parts = []
     for unit, size in DURATION_UNITS:
@@ -349,7 +371,7 @@ def human_duration(seconds):
     return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
-def rname_to_email(rname, origin):
+def rname_to_email(rname: dns.name.Name, origin: dns.name.Name) -> str:
     """SOA RNAME as a mail address: the first label is the local part
     (it may contain escaped dots, e.g. john\\.doe.example.com.). Characters
     that aren't printable are shown as \\DDD, as in the zone file: the address
@@ -362,7 +384,7 @@ def rname_to_email(rname, origin):
     return f"{local}@{dns.name.Name(name.labels[1:]).to_text(omit_final_dot=True)}"
 
 
-def soa_help(rds, origin):
+def soa_help(rds: dns.rdataset.Rdataset, origin: dns.name.Name) -> list[str]:
     """Comment lines explaining the SOA values as transferred."""
     r = rds[0]
     rows = [
@@ -382,16 +404,26 @@ def soa_help(rds, origin):
     ]
 
 
-def soa_line(rds, origin, pad=0):
+def soa_line(rds: dns.rdataset.Rdataset, origin: dns.name.Name, pad: int = 0) -> str:
     txt = rds[0].to_text(origin=origin, relativize=True)
     if pad:
         return f"{'@':<{pad}} {rds.ttl:>7} IN {'SOA':<6} {txt}"
     return f"@\t{rds.ttl}\tIN\tSOA\t{txt}"
 
 
-def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=None, addresses=False):
+def render_file(
+    soa_rds: dns.rdataset.Rdataset,
+    model: Records,
+    origin: dns.name.Name,
+    server: str,
+    notes: Notes | None = None,
+    extra: Iterable[str] = (),
+    hidden: Hidden | None = None,
+    addresses: bool = False,
+) -> str:
     notes = notes or {}
-    pad = max([len(owner_text(k.name, origin, addresses)) for k in [*model, *(hidden or {})]] + [1])
+    keys: list[RRKey | HiddenKey] = [*model, *(hidden or {})]
+    pad = max([len(owner_text(k.name, origin, addresses)) for k in keys] + [1])
     if hidden is None:
         filtered = [
             "; Filtered out: "
@@ -426,7 +458,7 @@ def render_file(soa_rds, model, origin, server, notes=None, extra=(), hidden=Non
     return "\n".join(hdr + rr_lines(model, origin, pad, notes, hidden, addresses)) + "\n"
 
 
-def shown(opts, hidden):
+def shown(opts: Options, hidden: Hidden) -> Hidden | None:
     """The read-only records to display, per --show-all / --no-rrsig, or None."""
     if not opts.show_all:
         return None

@@ -7,20 +7,21 @@ import dns.name
 
 IN_ADDR = dns.name.from_text("in-addr.arpa.")
 IP6_ARPA = dns.name.from_text("ip6.arpa.")
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 LOOKS_LIKE_IPV4 = re.compile(r"^\d+\.\d+\.\d+\.\d+(/\d+)?$")  # with an optional (rejected) prefix
 
 
-def is_reverse(origin):
+def is_reverse(origin: dns.name.Name) -> bool:
     return origin.is_subdomain(IN_ADDR) or origin.is_subdomain(IP6_ARPA)
 
 
-def address_owners(origin):
+def address_owners(origin: dns.name.Name) -> bool:
     """Whether owners in this zone may be written (and shown with -A) as IP
     addresses. Not in in-addr.arpa itself, where four labels are a valid name."""
     return is_reverse(origin) and origin != IN_ADDR
 
 
-def classless_range(origin):
+def classless_range(origin: dns.name.Name) -> tuple[int, int] | None:
     """For an RFC 2317 zone such as 16/28.2.0.192.in-addr.arpa (or 16-31.2...),
     the range of last octets it holds, else None."""
     if not origin.is_subdomain(IN_ADDR) or len(origin) != 7:  # x.c.b.a.in-addr.arpa.
@@ -37,7 +38,7 @@ def classless_range(origin):
     return (lo, hi) if 0 <= lo <= hi <= 255 else None
 
 
-def address_to_name(address, origin):
+def address_to_name(address: IPAddress, origin: dns.name.Name) -> dns.name.Name:
     """Owner name for an IP address in this reverse zone. In an RFC 2317 zone the
     last octet goes under the zone (192.0.2.17 -> 17.16/28.2.0.192.in-addr.arpa.)."""
     name = dns.name.from_text(address.reverse_pointer + ".")
@@ -48,7 +49,7 @@ def address_to_name(address, origin):
     return name
 
 
-def name_to_address(name, origin):
+def name_to_address(name: dns.name.Name, origin: dns.name.Name) -> str | None:
     """The IP address a reverse-zone owner name stands for, or None."""
     full = name.derelativize(origin)
     labels = [label.decode(errors="replace") for label in full.labels[:-1]]
@@ -69,7 +70,7 @@ def name_to_address(name, origin):
 NIBBLES = re.compile(r"^[0-9a-fA-F](\.[0-9a-fA-F])*$")
 
 
-def owner_to_name(token, origin):
+def owner_to_name(token: str, origin: dns.name.Name) -> str | None:
     """In a reverse zone, an owner written as an IP address -> its absolute owner
     name (text). None if the token isn't an address. Raises ValueError for tokens
     that look like an address but aren't valid (e.g. 192.0.2.010), which would
@@ -95,7 +96,7 @@ def owner_to_name(token, origin):
     return address_to_name(address, origin).to_text()
 
 
-def scan_line(line):
+def scan_line(line: str) -> tuple[int, int]:
     """-> (where the comment on a zone file line starts, or len(line); the net
     change in parenthesis depth, to know whether the next line continues a
     record). Quotes and escapes are respected."""
@@ -116,7 +117,7 @@ def scan_line(line):
     return len(line), depth
 
 
-def rewrite_address_owners(text, origin):
+def rewrite_address_owners(text: str, origin: dns.name.Name) -> str:
     """In a reverse zone, replace owner names written as IP addresses with their
     arpa names. Line count is preserved, so error line numbers stay valid."""
     if not address_owners(origin):

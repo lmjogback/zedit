@@ -1,7 +1,7 @@
 """An editing session: its files, the editor, the prompts and the main loop."""
 
+import argparse
 import difflib
-import itertools
 import os
 import re
 import shlex
@@ -10,13 +10,17 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import dns.exception
+import dns.name
+import dns.rdataset
 
 from zedit import changes, merge, zonefile
-from zedit.backend import Outcome
-from zedit.model import SOA_EDITABLE, SOA_KEY, ZeditError, same, tname
+from zedit.backend import Backend, Outcome, Preview
+from zedit.changes import ChangeSet
+from zedit.model import SOA_EDITABLE, SOA_KEY, Options, ZeditError, Zone, same, tname
 
 
 @dataclass(frozen=True)
@@ -27,11 +31,11 @@ class SessionFiles:
     path: str
 
     @property
-    def basepath(self):
+    def basepath(self) -> str:
         return self.path + ".base"
 
 
-def write_tmp(path, text):
+def write_tmp(path: str, text: str) -> str:
     """Write text to a new file next to path and fsync it; -> its name. The file
     is created exclusively (a symlink planted under its name isn't followed),
     readable only by the user, since sessions hold zone data."""
@@ -47,7 +51,7 @@ def write_tmp(path, text):
     return tmp
 
 
-def write_pair(files):
+def write_pair(files: Iterable[tuple[str, str]]) -> None:
     """Replace each (path, text) of files, the session file and its base, which
     must agree. All are written out first, so a failure there (disk full) leaves
     the old ones in place; only a crash between the renames that follow could
@@ -64,7 +68,7 @@ def write_pair(files):
             os.unlink(tmp)
 
 
-def rebase(opts, backend, files, base, mine):
+def rebase(opts: Options, backend: Backend, files: SessionFiles, base: Zone, mine: Zone) -> tuple[Zone, int]:
     """Transfer the zone again and merge mine into it, writing the session files.
     -> (the new base, number of conflicts)."""
     theirs = backend.fetch(opts.origin)
@@ -99,7 +103,13 @@ def rebase(opts, backend, files, base, mine):
     return theirs, conflicts
 
 
-def verify(backend, origin, edit, soa=None, attempts=10):
+def verify(
+    backend: Backend,
+    origin: dns.name.Name,
+    edit: ChangeSet,
+    soa: dns.rdataset.Rdataset | None = None,
+    attempts: int = 10,
+) -> list[str]:
     """Re-transfer the zone and check that every RRset the ChangeSet edit changes
     now matches it, and the SOA's MNAME and editable fields the SOA RRset sent (soa;
     None if the SOA wasn't sent). BIND silently drops some updates (CNAME rule, SOA with a
@@ -139,7 +149,7 @@ def verify(backend, origin, edit, soa=None, attempts=10):
     return bad
 
 
-def show_diff(old_lines, new_lines, fromfile, tofile):
+def show_diff(old_lines: list[str], new_lines: list[str], fromfile: str, tofile: str) -> None:
     color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")  # https://no-color.org
     for line in difflib.unified_diff(old_lines, new_lines, fromfile, tofile, lineterm=""):
         if color and line.startswith("+") and not line.startswith("+++"):
@@ -151,7 +161,7 @@ def show_diff(old_lines, new_lines, fromfile, tofile):
         print(line)
 
 
-def run_editor(path):
+def run_editor(path: str) -> int:
     """-> the editor's exit status."""
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
     try:
@@ -168,7 +178,7 @@ def run_editor(path):
             signal.signal(sig, handler)
 
 
-def ask(prompt, choices):
+def ask(prompt: str, choices: set[str]) -> str:
     while True:
         try:
             a = input(prompt).strip().lower()
@@ -178,7 +188,7 @@ def ask(prompt, choices):
             return a
 
 
-def edit_until_valid(path, origin, base_soa):
+def edit_until_valid(path: str, origin: dns.name.Name, base_soa: dns.rdataset.Rdataset) -> Zone | None:
     """-> the edited Zone, or None if the user aborts."""
     while True:
         status = run_editor(path)
@@ -196,14 +206,14 @@ def edit_until_valid(path, origin, base_soa):
                 return None
 
 
-def file_stem(origin):
+def file_stem(origin: dns.name.Name) -> str:
     """The zone name as a safe file name component. RFC 2317 zones such as
     16/28.2.0.192.in-addr.arpa contain '/', which would become a directory;
     anything other than letters, digits, '.', '-' and '_' becomes '_'."""
     return re.sub(r"[^A-Za-z0-9._-]", "_", origin.to_text(omit_final_dot=True)).lower()
 
 
-def state_dir():
+def state_dir() -> str:
     d = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "zedit")
     os.makedirs(d, mode=0o700, exist_ok=True)  # the mode applies only if it is created
     if os.stat(d).st_mode & 0o077:
@@ -215,7 +225,7 @@ def state_dir():
     return d
 
 
-def resume_command(args, path):
+def resume_command(args: argparse.Namespace, path: str) -> str:
     """The command line that resumes the session in path: the options given on
     this command line, without --dry-run and an earlier --resume."""
     cmd = ["zedit"]
@@ -234,22 +244,24 @@ def resume_command(args, path):
     return shlex.join([*cmd, "--resume", path, args.zone])
 
 
-def new_session_path(origin):
+def new_session_path(origin: dns.name.Name) -> str:
     """A new session file ZONE-TIMESTAMP.zone in the state directory, created
     empty and exclusively, so that two sessions for the same zone started within
     the same second don't share (and overwrite) one: the second one gets
     ZONE-TIMESTAMP-2.zone, and so on."""
     stem = os.path.join(state_dir(), f"{file_stem(origin)}-{time.strftime('%Y%m%dT%H%M%S')}")
-    for n in itertools.count(1):
+    n = 1
+    while True:
         path = f"{stem}.zone" if n == 1 else f"{stem}-{n}.zone"
         try:
             os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
         except FileExistsError:
+            n += 1
             continue
         return path
 
 
-def hint(files, args, dry_run=False):
+def hint(files: SessionFiles | None, args: argparse.Namespace, dry_run: bool = False) -> None:
     if files and os.path.exists(files.path):
         how = "Send them with" if dry_run else "Resume with"
         print(
@@ -258,13 +270,13 @@ def hint(files, args, dry_run=False):
         )
 
 
-def cleanup(files):
+def cleanup(files: SessionFiles) -> None:
     for p in (files.path, files.basepath):
         if os.path.exists(p):
             os.unlink(p)
 
 
-def discard_if_unchanged(files, origin, base):
+def discard_if_unchanged(files: SessionFiles, origin: dns.name.Name, base: Zone) -> bool:
     """After an aborted edit, remove the session if its file still parses and
     holds no change from the base: there is nothing to resume. -> removed?"""
     try:
@@ -282,7 +294,7 @@ def discard_if_unchanged(files, origin, base):
     return True
 
 
-def start(opts, backend, files, base):
+def start(opts: Options, backend: Backend, files: SessionFiles, base: Zone) -> None:
     """Write a new session for the zone as transferred (base)."""
     write_pair(
         (
@@ -302,7 +314,7 @@ def start(opts, backend, files, base):
     )
 
 
-def resume(opts, backend, files):
+def resume(opts: Options, backend: Backend, files: SessionFiles) -> tuple[Zone, bool] | None:
     """Rebase a saved session onto the zone as it is now. -> (the new base,
     whether to open the editor first), or None if the user aborts."""
     if not os.path.exists(files.basepath):
@@ -311,6 +323,7 @@ def resume(opts, backend, files):
         base = zonefile.parse_text(zonefile.read_text(files.basepath), opts.origin)
     except (dns.exception.DNSException, ValueError) as e:
         raise ZeditError(f"{files.basepath} is invalid: {e}") from e
+    mine: Zone | None
     try:
         mine = zonefile.parse_file(files.path, opts.origin, base.soa)
     except (dns.exception.DNSException, ValueError) as e:
@@ -322,7 +335,7 @@ def resume(opts, backend, files):
     return base, conflicts > 0
 
 
-def run(opts, backend, args):
+def run(opts: Options, backend: Backend, args: argparse.Namespace) -> int:
     """A whole session, new or resumed (args.resume). -> exit status. Errors are
     reported here, and so is how to resume a session that is left."""
     files = None
@@ -347,13 +360,13 @@ def run(opts, backend, args):
     return rc
 
 
-def show_preview(preview):
+def show_preview(preview: Preview) -> None:
     print(preview.text)
     if preview.soa_conflicts:
         print(f"Warning: {changes.soa_conflict_message(preview.soa_conflicts)} Sending would offer a rebase.")
 
 
-def next_edit(opts, files, base, need_edit):
+def next_edit(opts: Options, files: SessionFiles, base: Zone, need_edit: bool) -> Zone | None:
     """The edited zone, from the editor; with need_edit False first from the
     session file as it is (after a rebase without conflicts). None if the user
     aborts."""
@@ -365,7 +378,7 @@ def next_edit(opts, files, base, need_edit):
     return edit_until_valid(files.path, opts.origin, base.soa)
 
 
-def put_back_case(base, new):
+def put_back_case(base: Zone, new: Zone) -> Zone:
     """new with case-only changes put back (see merge.keep_base_case()), saying so."""
     new, recased = merge.keep_base_case(base, new)
     if recased:
@@ -376,7 +389,7 @@ def put_back_case(base, new):
     return new
 
 
-def review(opts, backend, base, new, edit):
+def review(opts: Options, backend: Backend, base: Zone, new: Zone, edit: ChangeSet) -> str | None:
     """Show the diff, a summary and warnings, and ask what to do; [s]cript shows
     what would be sent. -> the answer ("y", "e", "n" or "" for no), or None if
     the edit makes no difference."""
@@ -403,7 +416,7 @@ def review(opts, backend, base, new, edit):
         show_preview(backend.preview(opts.origin, edit))
 
 
-def send_and_verify(opts, backend, files, edit):
+def send_and_verify(opts: Options, backend: Backend, files: SessionFiles, edit: ChangeSet) -> int | None:
     """Apply the edit and verify it. -> exit status, or None to rebase (the
     user's choice when the backend says a rebase may help)."""
     result = backend.apply(opts.origin, edit)
@@ -430,7 +443,14 @@ def send_and_verify(opts, backend, files, edit):
     return None
 
 
-def edit_loop(opts, backend, args, files, base, need_edit):
+def edit_loop(
+    opts: Options,
+    backend: Backend,
+    args: argparse.Namespace,
+    files: SessionFiles,
+    base: Zone,
+    need_edit: bool,
+) -> int:
     """Edit, review and send until done. -> exit status."""
     while True:
         new = next_edit(opts, files, base, need_edit)

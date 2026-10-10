@@ -12,21 +12,25 @@ import dns.message
 import dns.name
 import dns.query
 import dns.rcode
+import dns.rdata
 import dns.rdataset
 import dns.rdatatype
 import dns.resolver
+import dns.tsig
 import dns.tsigkeyring
 import dns.update
 import dns.zone
 
 from zedit import changes, zonefile
 from zedit.backend import Outcome, Preview, SendResult
+from zedit.changes import ChangeSet
 from zedit.model import APEX_NS, SOA, ZeditError, Zone, die, tname
 
+Keyring = dict[dns.name.Name, dns.tsig.Key]
 KEY_STATEMENT = re.compile(r'key\s+"?([^"\s{]+)"?\s*\{(.*?)\}\s*;', re.S)
 
 
-def load_bind_key(path):
+def load_bind_key(path: str) -> tuple[Keyring, dns.name.Name]:
     """Read a key in tsig-keygen / named.conf format."""
     with open(path) as f:
         text = f.read()
@@ -53,21 +57,21 @@ class Rfc2136Backend:
     address: str
     port: int
     label: str
-    keyring: dict | None = None
+    keyring: Keyring | None = None
     keyname: dns.name.Name | None = None
 
-    def fetch(self, origin):
+    def fetch(self, origin: dns.name.Name) -> Zone:
         return fetch(self, origin)
 
-    def current_soa(self, origin):
+    def current_soa(self, origin: dns.name.Name) -> dns.rdataset.Rdataset | None:
         return live_soa(self, origin)
 
-    def preview(self, origin, edit):
+    def preview(self, origin: dns.name.Name, edit: ChangeSet) -> Preview:
         """The UPDATE as an nsupdate script."""
         ops, _, conflicts = update_ops(self, origin, edit)
         return Preview(script_text(self.address, self.port, origin, ops), conflicts)
 
-    def apply(self, origin, edit):
+    def apply(self, origin: dns.name.Name, edit: ChangeSet) -> SendResult:
         """Send the UPDATE, unless the SOA conflicts."""
         ops, soa, conflicts = update_ops(self, origin, edit)
         if conflicts:
@@ -76,7 +80,7 @@ class Rfc2136Backend:
         return replace(result, soa=soa) if result.outcome is Outcome.OK else result
 
 
-def fetch(server, origin):
+def fetch(server: Rfc2136Backend, origin: dns.name.Name) -> Zone:
     try:
         xfr = dns.query.xfr(
             server.address,
@@ -108,10 +112,10 @@ class Op(NamedTuple):
     name: dns.name.Name
     rdtype: int
     ttl: int | None = None
-    rdatas: tuple = ()
+    rdatas: tuple[dns.rdata.Rdata, ...] = ()
 
 
-def compute_update(edit, origin):
+def compute_update(edit: ChangeSet, origin: dns.name.Name) -> tuple[list[Op], list[Op], list[Op]]:
     """-> (deletes, adds, final deletes): only the records that change. Deletes go
     before adds (handles e.g. A -> CNAME), except at the apex NS RRset: RFC 2136
     §3.4.2.4 has the server ignore deleting the apex NS RRset or its last record,
@@ -128,6 +132,7 @@ def compute_update(edit, origin):
             if gone := tuple(r for r in o if r not in n):
                 final.append(Op("delete", name, t, rdatas=gone))
         elif o is None:
+            assert n is not None  # a change has at least one side
             adds.append(Op("add", name, t, n.ttl, tuple(n)))
         elif n is None:
             dels.append(Op("delete", name, t))
@@ -142,7 +147,7 @@ def compute_update(edit, origin):
     return dels, adds, final
 
 
-def compute_prereqs(edit, origin):
+def compute_prereqs(edit: ChangeSet, origin: dns.name.Name) -> list[Op]:
     """Optimistic lock on exactly the RRsets this update touches (RFC 2136 §2.4):
     value-dependent "RRset exists" with the base content for RRsets that are
     changed or deleted, "RRset does not exist" for RRsets that are created.
@@ -154,7 +159,7 @@ def compute_prereqs(edit, origin):
     return out
 
 
-def live_soa(server, origin):
+def live_soa(server: Rfc2136Backend, origin: dns.name.Name) -> dns.rdataset.Rdataset | None:
     """The zone's SOA RRset as the server answers it now, or None if the query
     fails. With inline-signing it is the signed zone's SOA: its serial is normally
     >= the unsigned one, and its other fields are the same.
@@ -179,14 +184,16 @@ def live_soa(server, origin):
     return None
 
 
-def soa_update(soa, origin):
+def soa_update(soa: dns.rdataset.Rdataset | None, origin: dns.name.Name) -> list[Op]:
     """The step that sets the SOA (an RRset), or none."""
     if soa is None:
         return []
     return [Op("add", origin, SOA, soa.ttl, (soa[0],))]
 
 
-def update_ops(server, origin, edit):
+def update_ops(
+    server: Rfc2136Backend, origin: dns.name.Name, edit: ChangeSet
+) -> tuple[list[Op], dns.rdataset.Rdataset | None, list[str]]:
     """-> (all steps of the UPDATE for the ChangeSet edit in order, SOA RRset sent
     or None, conflicting SOA fields): prerequisites, deletes, adds, final deletes
     (see compute_update()). The SOA is merged with the live zone at the moment
@@ -198,7 +205,7 @@ def update_ops(server, origin, edit):
     return ops, soa, conflicts
 
 
-def op_lines(op, origin):
+def op_lines(op: Op, origin: dns.name.Name) -> list[str]:
     """An Op as nsupdate commands."""
     name, t = op.name.to_text(), tname(op.rdtype)
     rds = [r.to_text(origin=origin, relativize=False) for r in op.rdatas]
@@ -211,19 +218,21 @@ def op_lines(op, origin):
     return [f"update add {name} {op.ttl} IN {t} {rd}" for rd in rds]
 
 
-def script_text(server, port, origin, ops):
+def script_text(server: str, port: int, origin: dns.name.Name, ops: list[Op]) -> str:
     """The UPDATE as an nsupdate script, for --dry-run and [s]cript. It can be
     sent by hand with nsupdate -v -k KEYFILE."""
     lines = [f"server {server} {port}", f"zone {origin}"]
     return "\n".join(lines + [line for op in ops for line in op_lines(op, origin)] + ["send", ""])
 
 
-def update_message(origin, ops, keyring=None, keyname=None):
+def update_message(
+    origin: dns.name.Name, ops: list[Op], keyring: Keyring | None = None, keyname: dns.name.Name | None = None
+) -> dns.update.UpdateMessage:
     """The UPDATE as a DNS message, signed with TSIG if there is a key."""
     msg = dns.update.UpdateMessage(origin)
     for op in ops:
         if op.kind == "absent":
-            msg.absent(op.name, op.rdtype)
+            msg.absent(op.name, dns.rdatatype.RdataType.make(op.rdtype))
         elif op.kind == "present":
             msg.present(op.name, *op.rdatas)
         elif op.kind == "delete":
@@ -241,7 +250,7 @@ UNKNOWN_OUTCOME = (
 )
 
 
-def send_update(server, origin, ops):
+def send_update(server: Rfc2136Backend, origin: dns.name.Name, ops: list[Op]) -> SendResult:
     """Send the UPDATE over TCP. -> SendResult (without the SOA)."""
     msg = update_message(origin, ops, server.keyring, server.keyname)
     try:
@@ -264,13 +273,13 @@ def send_update(server, origin, ops):
     return SendResult(Outcome.FAILED, text)
 
 
-def resolve(host, port):
+def resolve(host: str, port: int) -> str:
     """The address of host that first accepts a TCP connection on port, using
     Happy Eyeballs (RFC 8305): a server with an AAAA record is still reached
     quickly over IPv4 when IPv6 doesn't work. AXFR and the UPDATE
     use TCP anyway."""
 
-    async def connect():
+    async def connect() -> str:
         _, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port, happy_eyeballs_delay=0.25), timeout=10
         )
@@ -288,7 +297,7 @@ def resolve(host, port):
         die(f"cannot connect to {host} port {port}: {str(e) or 'timed out'}")
 
 
-def primary_from_mname(origin):
+def primary_from_mname(origin: dns.name.Name) -> str:
     """The zone's primary according to the SOA MNAME, via the system resolver."""
     try:
         answer = dns.resolver.resolve(origin, "SOA", lifetime=10)

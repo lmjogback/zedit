@@ -38,7 +38,10 @@ class Preview:
 
 
 class Backend(Protocol):
-    label: str  # names the server in messages and in the session file
+    @property
+    def label(self) -> str:
+        """Names the server in messages and in the session file."""
+        ...
 
     def fetch(self, origin: dns.name.Name) -> Zone:
         """The whole zone as it is now; raises ZeditError if it can't be read."""

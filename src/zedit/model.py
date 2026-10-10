@@ -50,6 +50,7 @@ class HiddenKey(NamedTuple):
 
 Records = dict[RRKey, dns.rdataset.Rdataset]
 Hidden = dict[HiddenKey, dns.rdataset.Rdataset]
+Notes = dict[RRKey, list[str]]  # comment lines to show above an RRset
 SOA_KEY = RRKey(dns.name.empty, SOA)
 APEX_NS = RRKey(dns.name.empty, NS)
 
@@ -74,28 +75,28 @@ class Zone:
     hidden: Hidden = field(default_factory=dict)
 
 
-def tname(t):
-    return dns.rdatatype.to_text(t)
+def tname(t: int) -> str:
+    return dns.rdatatype.RdataType.to_text(t)
 
 
-def die(msg, code=1) -> NoReturn:
+def die(msg: str, code: int = 1) -> NoReturn:
     print(f"zedit: {msg}", file=sys.stderr)
     sys.exit(code)
 
 
-def sortkey(k):
+def sortkey(k: RRKey | HiddenKey) -> tuple[dns.name.Name, int]:
     return (k.name, k.rdtype)  # dns.name gives canonical DNS order, apex first
 
 
-def display_key(k):
+def display_key(k: RRKey | HiddenKey) -> tuple[dns.name.Name, int, int]:
     """Owner name, then type; an RRSIG set sorts right after the type it covers."""
     name, t = k.name, k.rdtype
-    if t == RRSIG:
+    if t == RRSIG and isinstance(k, HiddenKey):  # RRSIG is never editable
         return (name, k.covers, 1)
     return (name, t, 0)
 
 
-def same(a, b):
+def same(a: dns.rdataset.Rdataset | None, b: dns.rdataset.Rdataset | None) -> bool:
     if a is None or b is None:
         return a is b
     return a.ttl == b.ttl and set(a) == set(b)
