@@ -89,14 +89,34 @@ def test_failing_editor_aborts_or_edits_again(monkeypatch, tmp_path):
     assert addrs(m, "www") == ["192.0.2.10"]
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["example.com"],
-        ["-s", "ns1.example.net", "-p", "5353", "-k", "/keys/my admin.key", "-a", "-A", "-n", "example.com"],
-        ["--no-rrsig", "-r", "/old/session.zone", "2.0.192.in-addr.arpa"],
-    ],
-)
+# Options resume_command() carries over, and those it deliberately doesn't (a
+# new session file replaces --resume; --dry-run is dropped)
+CARRIED = {"zone", "server", "port", "keyfile", "show_all", "no_rrsig", "addresses"}
+NOT_CARRIED = {"resume", "dry_run", "help", "version"}
+RESUME_ARGVS = [
+    ["example.com"],
+    ["-s", "ns1.example.net", "-p", "5353", "-k", "/keys/my admin.key", "-a", "-A", "-n", "example.com"],
+    ["--no-rrsig", "-r", "/old/session.zone", "2.0.192.in-addr.arpa"],
+]
+
+
+def test_every_option_is_carried_over_or_not_on_purpose():
+    """A new option must go into resume_command() and CARRIED, or into NOT_CARRIED."""
+    assert {a.dest for a in cli.make_parser()._actions} == CARRIED | NOT_CARRIED
+
+
+def test_resume_round_trip_covers_every_carried_option():
+    """Each carried option is set (not left at its default) in some argv of
+    test_resume_command_keeps_the_options, so leaving it out fails there."""
+    parser = cli.make_parser()
+    defaults = vars(parser.parse_args(["x"]))
+    set_somewhere = {
+        k for argv in RESUME_ARGVS for k, v in vars(parser.parse_args(argv)).items() if v != defaults[k]
+    }
+    assert CARRIED - {"zone"} <= set_somewhere
+
+
+@pytest.mark.parametrize("argv", RESUME_ARGVS)
 def test_resume_command_keeps_the_options(argv):
     """The printed command parses to the same options, with --dry-run dropped
     and --resume pointing at the session."""
