@@ -1,3 +1,6 @@
+"""What an edit changes, independently of how it is sent: the SOA to send,
+serial arithmetic, the change summary and the warnings shown before sending."""
+
 import pytest
 from helpers import CDNSKEY_RDATA, CDS_RDATA, ORIGIN, changeset, lines, model, soa_rd
 
@@ -6,6 +9,7 @@ from zedit.model import ZeditError
 
 
 def test_serial_max_rfc1982():
+    """Serials compare as RFC 1982 says: they wrap around at 2**32."""
     assert changes.serial_max(100, None) == 100
     assert changes.serial_max(100, 105) == 105
     assert changes.serial_max(105, 100) == 105
@@ -13,6 +17,9 @@ def test_serial_max_rfc1982():
 
 
 def test_soa_update_uses_live_serial():
+    """The serial sent is one more than the server's current one (117, after
+    re-signing, say), not the transferred one (100); a server ignores an SOA
+    whose serial isn't greater."""
     _, old, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 300\n")
     _, new, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 60\n")
     soa, _ = changes.soa_to_send(old, new, soa_rd("117 7200 900 1209600 300"))
@@ -43,6 +50,8 @@ def test_soa_keeps_concurrent_changes_to_locked_fields():
 
 
 def test_soa_conflict_on_the_same_field():
+    """Mine: MINIMUM 300 -> 60; on the server meanwhile: 300 -> 120. That is a
+    conflict, named so that the user can be told."""
     base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
     live = soa_rd("105 7200 900 1209600 120")
     _, conflicts = changes.soa_to_send(base, mine, live)
@@ -50,12 +59,16 @@ def test_soa_conflict_on_the_same_field():
 
 
 def test_soa_not_sent_blind():
+    """Without the server's current SOA there is nothing to merge with, so the
+    SOA change is not sent at all rather than possibly reverting the server's."""
     base, mine = soa_rd("100 7200 900 1209600 300"), soa_rd("100 7200 900 1209600 60")
     with pytest.raises(ZeditError, match="current SOA"):
         changes.soa_to_send(base, mine, None)
 
 
 def test_signal_warnings():
+    """A CDS or CDNSKEY added below the apex but not under a _dsboot label
+    (here the typo _dsbot) gets a warning; an unchanged one doesn't."""
     base, _, _ = model(f"stale CDS {CDS_RDATA}\n")
     new, _, _ = model(
         f"stale CDS {CDS_RDATA}\n"  # unchanged: no warning
@@ -68,6 +81,8 @@ def test_signal_warnings():
 
 
 def test_ascii_warnings():
+    """Added SPF, DKIM and DMARC records with non-ASCII bytes get a warning;
+    other TXT records, unchanged ones and v=spf10 (not SPF) don't."""
     base, _, _ = model('old TXT "v=spf1 include:r\u00e4ksm\u00f6rg\u00e5s.se -all"\n')
     new, _, _ = model(
         'old TXT "v=spf1 include:r\u00e4ksm\u00f6rg\u00e5s.se -all"\n'  # unchanged: no warning
