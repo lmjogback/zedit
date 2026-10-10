@@ -250,3 +250,24 @@ def test_backend_soa_conflict_is_previewed_and_offers_a_rebase(monkeypatch):
     assert server.preview(ORIGIN, edit).soa_conflicts == ["MINIMUM"]
     result = server.apply(ORIGIN, edit)
     assert result.outcome is Outcome.REBASE and "SOA MINIMUM changed both by you" in result.message
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "secret", "match"),
+    [
+        ("hmac-sha256", "not*base64", "invalid key in .*: Invalid base64"),
+        ("hmac-foo", "c2VjcmV0c2VjcmV0c2VjcmV0", "invalid key in .*: unknown algorithm hmac-foo"),
+    ],
+)
+def test_invalid_key_is_an_error(tmp_path, algorithm, secret, match):
+    """dnspython raises binascii.Error for a bad secret, and KeyError for an
+    unknown algorithm only when it signs; both are errors when the key is read."""
+    f = tmp_path / "bad.key"
+    f.write_text(f'key "admin" {{ algorithm {algorithm}; secret "{secret}"; }};\n')
+    with pytest.raises(ZeditError, match=match):
+        rfc2136.load_bind_key(str(f))
+
+
+def test_unreadable_key_file_is_an_error(tmp_path):
+    with pytest.raises(ZeditError, match="cannot read key file"):
+        rfc2136.load_bind_key(str(tmp_path))  # a directory

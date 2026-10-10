@@ -6,6 +6,9 @@
   UPDATE itself with dnspython, signed with the same TSIG key it uses for the
   transfer. `--dry-run` and `[s]cript` still show the update as an `nsupdate`
   script, which can be sent by hand.
+- Fix: a key file with a secret that isn't base64 or an unknown algorithm,
+  and a port outside 1-65535 (`-p 65536`), ended zedit with a traceback.
+  They are now reported as errors; the key is checked when it is read.
 - If zedit fails with an unexpected error (a bug) after the session was saved,
   it still says where the session is and how to resume it, before the
   traceback.

@@ -36,13 +36,24 @@ def check_keyfile(path: str) -> None:
         print(f"zedit: warning: {path} is readable by group/others (chmod 600)", file=sys.stderr)
 
 
+def port(text: str) -> int:
+    """An argparse type: a TCP port number."""
+    try:
+        n = int(text)
+    except ValueError:
+        n = 0
+    if not 1 <= n <= 65535:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a port number (1-65535)")
+    return n
+
+
 def make_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="zedit", description="Edit a dynamic DNS zone via AXFR + $EDITOR + DNS UPDATE"
     )
     ap.add_argument("zone")
     ap.add_argument("-s", "--server", help="primary server (default: the zone's SOA MNAME)")
-    ap.add_argument("-p", "--port", type=int, default=53)
+    ap.add_argument("-p", "--port", type=port, default=53)
     ap.add_argument(
         "-k",
         "--keyfile",
@@ -98,7 +109,7 @@ def main() -> None:
     args = make_parser().parse_args()
     try:
         opts, server = setup(args)
-    except ZeditError as e:
+    except (ZeditError, OSError) as e:  # OSError: e.g. the config directory unreadable
         print(f"zedit: {e}", file=sys.stderr)
         sys.exit(1)
     sys.exit(session.run(opts, server, args))
