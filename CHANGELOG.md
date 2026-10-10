@@ -6,6 +6,9 @@
   UPDATE itself with dnspython, signed with the same TSIG key it uses for the
   transfer. `--dry-run` and `[s]cript` still show the update as an `nsupdate`
   script, which can be sent by hand.
+- If zedit fails with an unexpected error (a bug) after the session was saved,
+  it still says where the session is and how to resume it, before the
+  traceback.
 - Fix: the "N delete, M add" summary before sending counted a deleted RRset,
   or one whose TTL changed, as one delete however many records it held. It
   now counts the records the diff removes and adds.
