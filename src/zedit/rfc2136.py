@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import NamedTuple
 
 import dns.exception
@@ -20,6 +20,7 @@ import dns.update
 import dns.zone
 
 from zedit import changes, zonefile
+from zedit.backend import Outcome, Preview, SendResult
 from zedit.model import APEX_NS, SOA, ZeditError, Zone, die, tname
 
 KEY_STATEMENT = re.compile(r'key\s+"?([^"\s{]+)"?\s*\{(.*?)\}\s*;', re.S)
@@ -54,6 +55,25 @@ class Rfc2136Backend:
     label: str
     keyring: dict | None = None
     keyname: dns.name.Name | None = None
+
+    def fetch(self, origin):
+        return fetch(self, origin)
+
+    def current_soa(self, origin):
+        return live_soa(self, origin)
+
+    def preview(self, origin, edit):
+        """The UPDATE as an nsupdate script."""
+        ops, _, conflicts = update_ops(self, origin, edit)
+        return Preview(script_text(self.address, self.port, origin, ops), conflicts)
+
+    def apply(self, origin, edit):
+        """Send the UPDATE, unless the SOA conflicts."""
+        ops, soa, conflicts = update_ops(self, origin, edit)
+        if conflicts:
+            return SendResult(Outcome.REBASE, changes.soa_conflict_message(conflicts))
+        result = send_update(self, origin, ops)
+        return replace(result, soa=soa) if result.outcome is Outcome.OK else result
 
 
 def fetch(server, origin):
@@ -198,12 +218,6 @@ def script_text(server, port, origin, ops):
     return "\n".join(lines + [line for op in ops for line in op_lines(op, origin)] + ["send", ""])
 
 
-def make_script(server, origin, edit):
-    """-> (nsupdate script, SOA RRset sent or None, conflicting SOA fields)."""
-    ops, soa, conflicts = update_ops(server, origin, edit)
-    return script_text(server.address, server.port, origin, ops), soa, conflicts
-
-
 def update_message(origin, ops, keyring=None, keyname=None):
     """The UPDATE as a DNS message, signed with TSIG if there is a key."""
     msg = dns.update.UpdateMessage(origin)
@@ -228,25 +242,26 @@ UNKNOWN_OUTCOME = (
 
 
 def send_update(server, origin, ops):
-    """Send the UPDATE over TCP. -> (ok, message, rebase_makes_sense)"""
+    """Send the UPDATE over TCP. -> SendResult (without the SOA)."""
     msg = update_message(origin, ops, server.keyring, server.keyname)
     try:
         response = dns.query.tcp(msg, server.address, port=server.port, timeout=UPDATE_TIMEOUT)
     except dns.exception.Timeout:
-        return False, f"UPDATE timed out - {UNKNOWN_OUTCOME}", True
+        return SendResult(Outcome.REBASE, f"UPDATE timed out - {UNKNOWN_OUTCOME}")
     except (EOFError, ConnectionResetError):
-        return False, f"connection closed during the UPDATE - {UNKNOWN_OUTCOME}", True
+        return SendResult(Outcome.REBASE, f"connection closed during the UPDATE - {UNKNOWN_OUTCOME}")
     except (OSError, dns.exception.DNSException) as e:
         # e.g. connection refused, or a TSIG error (bad key, clock skew)
-        return False, f"UPDATE failed: {e}", False
+        return SendResult(Outcome.FAILED, f"UPDATE failed: {e}")
     rcode = response.rcode()
     if rcode == dns.rcode.NOERROR:
-        return True, "", False
+        return SendResult(Outcome.OK)
     text = f"update failed: {dns.rcode.to_text(rcode)}"
     if rcode in (dns.rcode.NXRRSET, dns.rcode.YXRRSET):
-        return False, text + "\nRRsets you changed were modified on the server after the transfer.", True
+        message = text + "\nRRsets you changed were modified on the server after the transfer."
+        return SendResult(Outcome.REBASE, message)
     # REFUSED/NOTAUTH/SERVFAIL etc.: rebasing won't help
-    return False, text, False
+    return SendResult(Outcome.FAILED, text)
 
 
 def resolve(host, port):
