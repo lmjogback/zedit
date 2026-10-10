@@ -1,3 +1,7 @@
+"""Reading and writing zone files: what is editable and what is read-only,
+the checks on an edited file, $GENERATE, error line numbers, internationalized
+names, and the session file's layout and comments."""
+
 import os
 import shutil
 import subprocess
@@ -13,12 +17,16 @@ from zedit.model import Options, same, tname
 
 
 def test_dnssec_types_filtered():
+    """DNSSEC records and BIND's signing state (TYPE65534) are the server's to
+    maintain: they go to the read-only part, not into the editable model."""
     m, _, rejected = model("@ NS ns1\nns1 A 192.0.2.1\n@ NSEC3PARAM 1 0 0 -\n@ TYPE65534 \\# 5 0D12340001\n")
     assert set(m) == {key("@", "NS"), key("ns1", "A")}
     assert {k[1] for k in rejected} == {51, 65534}
 
 
 def test_locked_soa_fields(tmp_path):
+    """MNAME, SERIAL and the SOA's own TTL may not be edited; the error names
+    the fields that were."""
     _, base_soa, _ = model("")
     f = tmp_path / "z.zone"
     f.write_text("$TTL 300\n@ 3600 IN SOA ns2 hostmaster 101 7200 900 1209600 300\n")
@@ -30,6 +38,8 @@ def test_locked_soa_fields(tmp_path):
 
 
 def test_cname_conflict_rejected(tmp_path):
+    """A name with a CNAME may hold nothing else (RFC 1034). BIND silently
+    ignores an UPDATE that breaks this rule, so zedit must catch it first."""
     # At parse time (dnspython rejects it itself) ...
     _, base_soa, _ = model("")
     f = tmp_path / "z.zone"
@@ -43,6 +53,7 @@ def test_cname_conflict_rejected(tmp_path):
         zonefile.check_cname({**a, **b})
 
 
+# Records of a signed zone, as a transfer gives them
 SIGNED = (
     "@ NS ns1\n"
     "@ RRSIG NS 13 2 300 20261019040406 20261005123408 34319 @ AAAA\n"
@@ -56,6 +67,8 @@ SIGNED = (
 
 
 def test_show_all_renders_read_only_and_round_trips():
+    """With -a, the read-only records are shown as ';ro' comment lines, each
+    RRSIG next to what it signs, and reading the file back ignores them."""
     m, soa, hidden = model(SIGNED)
     text = zonefile.render_file(soa, m, ORIGIN, "x", hidden=hidden)
     ro = [line for line in text.splitlines() if line.startswith(";ro ")]
@@ -72,6 +85,9 @@ def test_show_all_renders_read_only_and_round_trips():
 
 
 def test_no_rrsig_keeps_keys_drops_noise():
+    """--no-rrsig shows the keys and the signing state but not the RRSIG and
+    NSEC records, which are many and change with every re-signing; without -a,
+    nothing read-only is shown."""
     _, _, hidden = model(SIGNED)
     opts = Options(ORIGIN, show_all=True, no_rrsig=True)
     assert sorted(tname(k[1]) for k in zonefile.shown(opts, hidden)) == ["DNSKEY", "TYPE65534"]
@@ -91,10 +107,13 @@ def test_no_rrsig_keeps_keys_drops_noise():
     ],
 )
 def test_human_duration(seconds, text):
+    """SOA timers are explained in words in the session file."""
     assert zonefile.human_duration(seconds) == text
 
 
 def test_rname_to_email():
+    """The SOA RNAME is a mail address with the first dot as the '@'; an escaped
+    dot belongs to the local part."""
     assert zonefile.rname_to_email(dns.name.from_text("hostmaster", None), ORIGIN) == "hostmaster@example.com"
     assert (
         zonefile.rname_to_email(dns.name.from_text(r"john\.doe.example.net."), ORIGIN)
@@ -103,6 +122,8 @@ def test_rname_to_email():
 
 
 def test_soa_help_is_comment_only():
+    """The explanation of the SOA fields is comments only: reading the file
+    back gives the same SOA and records."""
     m, soa, _ = model("www A 192.0.2.1\n", soa="@ 3600 IN SOA ns1 hostmaster 100 86401 900 1209600 300\n")
     text = zonefile.render_file(soa, m, ORIGIN, "x")
     assert ";   REFRESH = 86401" in text and "(1 day and 1 second)" in text
@@ -113,6 +134,8 @@ def test_soa_help_is_comment_only():
 
 
 def test_rname_control_characters_stay_in_the_comment():
+    """An RNAME with a line break (\\010) or other unprintable characters is
+    escaped in the comment: unescaped, the rest of it would be read as a record."""
     rname = r"x\010evil\032TXT\032\034injected\034\013\226\128\168"
     soa = f"@ 3600 IN SOA ns1 {rname} 100 7200 900 1209600 300\n"
     m, soa_rds, _ = model("www A 192.0.2.1\n", soa=soa)
@@ -123,6 +146,7 @@ def test_rname_control_characters_stay_in_the_comment():
 
 
 def test_origin_directive_inside_zone():
+    """$ORIGIN may be used in the file; names are made relative to the zone."""
     o = dns.name.from_text("2.0.192.in-addr.arpa.")
     text = "$TTL 300\n" + SOA + "$ORIGIN 2.0.192.in-addr.arpa.\n10 PTR www.example.com.\n"
     m = zonefile.parse_text(text, o).records
@@ -130,6 +154,8 @@ def test_origin_directive_inside_zone():
 
 
 def test_names_outside_zone_are_rejected_not_dropped():
+    """A record outside the zone (here after a wrong $ORIGIN) is an error, not
+    silently lost as dnspython would lose it."""
     # dnspython's reader would silently drop these
     text = "$TTL 300\n" + SOA + "www A 192.0.2.1\n$ORIGIN example.org.\nfoo A 192.0.2.2\n"
     with pytest.raises(ValueError, match="foo.example.org"):
@@ -137,6 +163,7 @@ def test_names_outside_zone_are_rejected_not_dropped():
 
 
 def generated(line):
+    """The lines a $GENERATE line expands to."""
     text, _ = zonefile.expand_generate(line)
     return text.split("\n")
 
@@ -155,10 +182,12 @@ def generated(line):
     ],
 )
 def test_generate_substitute_like_bind(template, i, expected):
+    """$ and ${offset,width,base} are substituted as BIND does."""
     assert zonefile.generate_substitute(template, i) == expected
 
 
 def test_generate_range_and_step():
+    """START-STOP/STEP, both ends included."""
     assert generated("$GENERATE 30-34/2 $ PTR h$.example.com.") == [
         "30 PTR h30.example.com.",
         "32 PTR h32.example.com.",
@@ -181,22 +210,27 @@ def test_generate_leaves_the_comment_alone():
     ],
 )
 def test_generate_errors(line, match):
+    """A bad range or modifier is an error, not a guess."""
     with pytest.raises(ValueError, match=match):
         zonefile.expand_generate(line)
 
 
 def test_generate_errors_point_at_the_users_line():
+    """After expanding 50 records, an error on the next line is still reported
+    on the user's line 4, not on line 53 of the expanded text."""
     text = "$TTL 300\n" + SOA + "$GENERATE 1-50 $ PTR h$.example.com.\nbad line here\n"
     with pytest.raises(ValueError, match="^line 4:"):
         zonefile.parse_text(text, REV)
 
 
 def test_generate_outside_zone_is_rejected():
+    """Generated records outside the zone are reported, like written ones."""
     text = "$TTL 300\n" + SOA + "$ORIGIN example.org.\n$GENERATE 1-3 h$ A 192.0.2.$\n"
     with pytest.raises(ValueError, match="h1.example.org.*h2.example.org.*h3.example.org"):
         zonefile.parse_text(text, REV)
 
 
+# BIND's zone checker, often in an sbin directory that isn't on a user's PATH
 NAMED_CHECKZONE = shutil.which("named-checkzone") or shutil.which(
     "named-checkzone", path=os.pathsep.join(["/usr/local/sbin", "/usr/sbin", "/sbin"])
 )
@@ -204,6 +238,8 @@ NAMED_CHECKZONE = shutil.which("named-checkzone") or shutil.which(
 
 @pytest.mark.skipif(not NAMED_CHECKZONE, reason="named-checkzone not found")
 def test_generate_matches_named_checkzone(tmp_path):
+    """zedit's $GENERATE gives exactly the records BIND does, checked with
+    named-checkzone where it is installed."""
     zone = (
         "$TTL 300\n@ 3600 IN SOA ns1.example.net. hostmaster.example.net. 1 7200 900 1209600 300\n"
         "@ IN NS ns1.example.net.\n"
@@ -242,11 +278,16 @@ def test_generate_matches_named_checkzone(tmp_path):
     ],
 )
 def test_records_dnspython_would_merge_silently_are_errors(body, match):
+    """Lines that dnspython would quietly merge into something else, reported
+    on the offending line: a second CNAME or SOA (it keeps only the last), or a
+    different TTL within one RRset (it keeps the lowest)."""
     with pytest.raises(ValueError, match=match):
         zonefile.parse_text("$TTL 3600\n" + SOA + "@ NS ns1\n" + body, ORIGIN)
 
 
 def test_identical_records_are_not_an_error():
+    """The same record twice is harmless (it is one record), also when written
+    once relative and once absolute."""
     m = zonefile.parse_text(
         "$TTL 300\n"
         + SOA
@@ -280,6 +321,8 @@ def test_dnspython_reader_hook():
 
 
 def test_cds_filtered_only_at_the_apex():
+    """CDS and CDNSKEY at the apex are maintained by the server; below it they
+    are ordinary records, e.g. RFC 9615 signals, and can be edited."""
     m, _, rejected = model(
         f"@ CDS {CDS_RDATA}\n@ CDNSKEY {CDNSKEY_RDATA}\n"
         f"_dsboot.child.example CDS {CDS_RDATA}\n_dsboot.child.example CDNSKEY {CDNSKEY_RDATA}\n"
@@ -289,6 +332,7 @@ def test_cds_filtered_only_at_the_apex():
 
 
 def test_cds_at_the_apex_cannot_be_added():
+    """Adding CDS at the apex in the file is an error, since the server owns it."""
     with pytest.raises(ValueError, match="CDS/CDNSKEY at the apex"):
         zonefile.parse_text("$TTL 300\n" + SOA + f"@ CDS {CDS_RDATA}\n", ORIGIN)
     m = zonefile.parse_text("$TTL 300\n" + SOA + f"_dsboot.child.example CDS {CDS_RDATA}\n", ORIGIN).records
@@ -296,6 +340,8 @@ def test_cds_at_the_apex_cannot_be_added():
 
 
 def test_apex_ns_cannot_all_be_removed(tmp_path):
+    """A zone needs an NS record at its apex; BIND would silently ignore
+    deleting the last one, so it is an error here."""
     _, base_soa, _ = model("")
     f = tmp_path / "z.zone"
     f.write_text("$TTL 300\n" + SOA + "www A 192.0.2.10\n")
@@ -327,6 +373,8 @@ def test_session_files_are_utf8(tmp_path):
     ],
 )
 def test_errors_are_reported_on_their_line(records):
+    """A syntax error is reported on its own line, also when it is in the last
+    field of a line or the last line of the file."""
     with pytest.raises(ValueError, match="^line 4: "):
         zonefile.parse_text("$TTL 300\n" + SOA + "@ NS ns1\n" + records + "\n", ORIGIN)
 
@@ -341,5 +389,7 @@ def test_non_ascii_names_use_idna_2008():
 
 @pytest.mark.parametrize("record", ["\u2603 A 192.0.2.1", "x CNAME a\u200db."])
 def test_invalid_idn_is_an_error_on_its_line(record):
+    """A name that isn't a valid internationalized name (a snowman, a zero-width
+    joiner) is an error on its line."""
     with pytest.raises(ValueError, match="^line 4: IDNA"):
         zonefile.parse_text("$TTL 300\n" + SOA + "@ NS ns1\n" + record + "\n", ORIGIN)
