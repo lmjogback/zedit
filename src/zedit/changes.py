@@ -4,14 +4,17 @@ receives, the SOA to send, and warnings."""
 import re
 from dataclasses import dataclass
 
+import dns.name
 import dns.rdataset
 import dns.rdatatype
+import dns.rdtypes.txtbase
 
 from zedit import merge
 from zedit.model import (
     FILTERED_AT_APEX,
     SIGNAL_LABEL,
     SOA_EDITABLE,
+    Records,
     RRKey,
     ZeditError,
     Zone,
@@ -41,7 +44,7 @@ class ChangeSet:
     new_soa: dns.rdataset.Rdataset
 
     @property
-    def soa_changed(self):
+    def soa_changed(self) -> bool:
         return soa_changed(self.base_soa, self.new_soa)
 
 
@@ -58,7 +61,7 @@ def change_set(base: Zone, new: Zone) -> ChangeSet:
     )
 
 
-def signal_warnings(base, new):
+def signal_warnings(base: Records, new: Records) -> list[str]:
     """CDS/CDNSKEY added or changed below the apex but not at a _dsboot name, where
     an RFC 9615 signal belongs (e.g. a typo such as _dsbot). Only a warning: zedit
     doesn't check signals against the child zone or its delegation."""
@@ -76,7 +79,7 @@ TXT = int(dns.rdatatype.TXT)
 SPF_RECORD = re.compile(rb"v=spf1(?: |$)", re.IGNORECASE)
 
 
-def ascii_kind(name, rd):
+def ascii_kind(name: dns.name.Name, rd: dns.rdtypes.txtbase.TXTBase) -> str | None:
     """'SPF', 'DKIM' or 'DMARC' for a TXT record of a protocol that is ASCII
     only (RFC 7208, 6376, 7489), else None."""
     text = b"".join(rd.strings)
@@ -90,7 +93,7 @@ def ascii_kind(name, rd):
     return None
 
 
-def ascii_warnings(base, new):
+def ascii_warnings(base: Records, new: Records) -> list[str]:
     """Non-ASCII bytes in an added SPF, DKIM or DMARC record: typically a
     pasted typographic quote, dash or no-break space, or a domain written in
     Unicode instead of as an A-label. Shown as \\DDD escapes, but easy to miss."""
@@ -109,14 +112,14 @@ def ascii_warnings(base, new):
     return out
 
 
-def serial_max(a, b):
+def serial_max(a: int, b: int | None) -> int:
     """The greater of two serials in RFC 1982 serial number arithmetic."""
     if b is None:
         return a
     return b if 0 < (b - a) % 2**32 < 2**31 else a
 
 
-def change_count(edit):
+def change_count(edit: ChangeSet) -> tuple[int, int]:
     """-> (records deleted, records added), as the diff shows them: a deleted
     RRset counts each of its records, and so does an RRset whose TTL changes,
     on both sides."""
@@ -132,11 +135,13 @@ def change_count(edit):
     return dels, adds
 
 
-def soa_changed(old_rds, new_rds):
+def soa_changed(old_rds: dns.rdataset.Rdataset, new_rds: dns.rdataset.Rdataset) -> bool:
     return old_rds.ttl != new_rds.ttl or old_rds[0] != new_rds[0]
 
 
-def soa_to_send(base_rds, new_rds, live):
+def soa_to_send(
+    base_rds: dns.rdataset.Rdataset, new_rds: dns.rdataset.Rdataset, live: dns.rdataset.Rdataset | None
+) -> tuple[dns.rdataset.Rdataset | None, list[str]]:
     """-> (the SOA RRset to send, or None if the edit doesn't change the SOA;
     the editable fields that conflict).
 
@@ -166,7 +171,7 @@ def soa_to_send(base_rds, new_rds, live):
     return dns.rdataset.from_rdata(live.ttl, live[0].replace(**fields)), conflicts
 
 
-def soa_conflict_message(conflicts):
+def soa_conflict_message(conflicts: list[str]) -> str:
     return (
         f"SOA {', '.join(conflicts)} changed both by you and on the server since the transfer; nothing sent."
     )

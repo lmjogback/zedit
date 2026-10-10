@@ -12,11 +12,11 @@ from zedit import __version__, rfc2136, session
 from zedit.model import IDNA, Options, die
 
 
-def config_dir():
+def config_dir() -> str:
     return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "zedit")
 
 
-def find_keyfile(origin):
+def find_keyfile(origin: dns.name.Name) -> str | None:
     """Default TSIG key: $ZEDIT_KEYFILE, else ~/.config/zedit/keys/ZONE.key,
     else ~/.config/zedit/default.key, else None (no TSIG). ZONE as in session.file_stem()."""
     env = os.environ.get("ZEDIT_KEYFILE")
@@ -29,14 +29,14 @@ def find_keyfile(origin):
     return None
 
 
-def check_keyfile(path):
+def check_keyfile(path: str) -> None:
     if not os.path.isfile(path):
         die(f"key file {path} not found")
     if os.stat(path).st_mode & 0o077:
         print(f"zedit: warning: {path} is readable by group/others (chmod 600)", file=sys.stderr)
 
 
-def make_parser():
+def make_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="zedit", description="Edit a dynamic DNS zone via AXFR + $EDITOR + DNS UPDATE"
     )
@@ -74,7 +74,7 @@ def make_parser():
     return ap
 
 
-def main():
+def main() -> None:
     args = make_parser().parse_args()
 
     try:
