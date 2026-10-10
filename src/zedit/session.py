@@ -14,7 +14,8 @@ from dataclasses import dataclass
 
 import dns.exception
 
-from zedit import changes, merge, rfc2136, zonefile
+from zedit import changes, merge, zonefile
+from zedit.backend import Outcome
 from zedit.model import SOA_EDITABLE, SOA_KEY, ZeditError, same, tname
 
 
@@ -63,10 +64,10 @@ def write_pair(files):
             os.unlink(tmp)
 
 
-def rebase(opts, server, files, base, mine):
+def rebase(opts, backend, files, base, mine):
     """Transfer the zone again and merge mine into it, writing the session files.
     -> (the new base, number of conflicts)."""
-    theirs = rfc2136.fetch(server, opts.origin)
+    theirs = backend.fetch(opts.origin)
     merged = merge.merge3(base.records, mine.records, theirs.records)
     soa = merge.merge_soa(base.soa, mine.soa, theirs.soa)
     notes = {**merged.notes, SOA_KEY: soa.notes} if soa.notes else merged.notes
@@ -81,14 +82,14 @@ def rebase(opts, server, files, base, mine):
                     soa.soa,
                     merged.records,
                     opts.origin,
-                    server.label,
+                    backend.label,
                     notes,
                     extra,
                     zonefile.shown(opts, theirs.hidden),
                     opts.addresses,
                 ),
             ),
-            (files.basepath, zonefile.render_file(theirs.soa, theirs.records, opts.origin, server.label)),
+            (files.basepath, zonefile.render_file(theirs.soa, theirs.records, opts.origin, backend.label)),
         )
     )
     print(
@@ -98,13 +99,7 @@ def rebase(opts, server, files, base, mine):
     return theirs, conflicts
 
 
-def soa_conflict_message(conflicts):
-    return (
-        f"SOA {', '.join(conflicts)} changed both by you and on the server since the transfer; nothing sent."
-    )
-
-
-def verify(server, origin, edit, soa=None, attempts=10):
+def verify(backend, origin, edit, soa=None, attempts=10):
     """Re-transfer the zone and check that every RRset the ChangeSet edit changes
     now matches it, and the SOA's MNAME and editable fields the SOA RRset sent (soa;
     None if the SOA wasn't sent). BIND silently drops some updates (CNAME rule, SOA with a
@@ -118,11 +113,11 @@ def verify(server, origin, edit, soa=None, attempts=10):
         if i:
             time.sleep(min(0.25 * 2 ** (i - 1), 2))
         if serial is not None:
-            live = rfc2136.live_soa(server, origin)
+            live = backend.current_soa(origin)
             if live is not None and live[0].serial == serial:
                 continue  # the zone hasn't changed since the last transfer
         try:
-            after = rfc2136.fetch(server, origin)
+            after = backend.fetch(origin)
         except ZeditError as e:
             # The update was sent, so this is "not verified" (exit 3), not a plain error; retry
             bad, serial = [f"(zone transfer for verification failed: {e})"], None
@@ -287,18 +282,18 @@ def discard_if_unchanged(files, origin, base):
     return True
 
 
-def start(opts, server, files, base):
+def start(opts, backend, files, base):
     """Write a new session for the zone as transferred (base)."""
     write_pair(
         (
-            (files.basepath, zonefile.render_file(base.soa, base.records, opts.origin, server.label)),
+            (files.basepath, zonefile.render_file(base.soa, base.records, opts.origin, backend.label)),
             (
                 files.path,
                 zonefile.render_file(
                     base.soa,
                     base.records,
                     opts.origin,
-                    server.label,
+                    backend.label,
                     hidden=zonefile.shown(opts, base.hidden),
                     addresses=opts.addresses,
                 ),
@@ -307,7 +302,7 @@ def start(opts, server, files, base):
     )
 
 
-def resume(opts, server, files):
+def resume(opts, backend, files):
     """Rebase a saved session onto the zone as it is now. -> (the new base,
     whether to open the editor first), or None if the user aborts."""
     if not os.path.exists(files.basepath):
@@ -323,24 +318,24 @@ def resume(opts, server, files):
         mine = edit_until_valid(files.path, opts.origin, base.soa)
         if mine is None:
             return None
-    base, conflicts = rebase(opts, server, files, base, mine)
+    base, conflicts = rebase(opts, backend, files, base, mine)
     return base, conflicts > 0
 
 
-def run(opts, server, args):
+def run(opts, backend, args):
     """A whole session, new or resumed (args.resume). -> exit status. Errors are
     reported here, and so is how to resume a session that is left."""
     files = None
     try:
         if args.resume:
             files = SessionFiles(args.resume)
-            started = resume(opts, server, files)
+            started = resume(opts, backend, files)
         else:
-            base = rfc2136.fetch(server, opts.origin)
+            base = backend.fetch(opts.origin)
             files = SessionFiles(new_session_path(opts.origin))
-            start(opts, server, files, base)
+            start(opts, backend, files, base)
             started = base, True
-        rc = 1 if started is None else edit_loop(opts, server, args, files, *started)
+        rc = 1 if started is None else edit_loop(opts, backend, args, files, *started)
     except KeyboardInterrupt:
         print()
         rc = 130
@@ -352,7 +347,13 @@ def run(opts, server, args):
     return rc
 
 
-def edit_loop(opts, server, args, files, base, need_edit):
+def show_preview(preview):
+    print(preview.text)
+    if preview.soa_conflicts:
+        print(f"Warning: {changes.soa_conflict_message(preview.soa_conflicts)} Sending would offer a rebase.")
+
+
+def edit_loop(opts, backend, args, files, base, need_edit):
     """Edit, review and send until done. -> exit status."""
     while True:
         if need_edit:
@@ -402,33 +403,23 @@ def edit_loop(opts, server, args, files, base, need_edit):
             a = ask("Send? [y]es / [N]o / [e]dit / [s]cript: ", {"y", "n", "e", "s"})
             if a != "s":
                 break
-            script, _, conflicts = rfc2136.make_script(server, opts.origin, edit)
-            print(script)
-            if conflicts:
-                print(f"Warning: {soa_conflict_message(conflicts)} Sending would offer a rebase.")
+            show_preview(backend.preview(opts.origin, edit))
         if a == "e":
             continue
         if a != "y":
             print("Nothing sent.")
             return 2
         if args.dry_run:
-            script, _, conflicts = rfc2136.make_script(server, opts.origin, edit)
-            print(script)
-            if conflicts:
-                print(f"Warning: {soa_conflict_message(conflicts)} Sending would offer a rebase.")
+            show_preview(backend.preview(opts.origin, edit))
             print("Nothing sent (--dry-run).")
             hint(files, args, dry_run=True)
             return 0
 
-        ops, sent_soa, conflicts = rfc2136.update_ops(server, opts.origin, edit)
-        if conflicts:
-            ok, out, can_rebase = False, soa_conflict_message(conflicts), True
-        else:
-            ok, out, can_rebase = rfc2136.send_update(server, opts.origin, ops)
-        if ok:
-            if out:
-                print(out)
-            missing = verify(server, opts.origin, edit, sent_soa)
+        result = backend.apply(opts.origin, edit)
+        if result.outcome is Outcome.OK:
+            if result.message:
+                print(result.message)
+            missing = verify(backend, opts.origin, edit, result.soa)
             if missing:
                 print(
                     "Update accepted, but could not be verified:\n  "
@@ -440,10 +431,10 @@ def edit_loop(opts, server, args, files, base, need_edit):
             print("Updated and verified.")
             cleanup(files)
             return 0
-        print(out, file=sys.stderr)
-        if not can_rebase:
+        print(result.message, file=sys.stderr)
+        if result.outcome is not Outcome.REBASE:
             return 2
         if ask("[r]ebase onto current zone / [a]bort? ", {"r", "a"}) != "r":
             return 2
-        base, conflicts = rebase(opts, server, files, base, new)
+        base, conflicts = rebase(opts, backend, files, base, new)
         need_edit = conflicts > 0  # conflicts -> straight to the editor, otherwise diff first

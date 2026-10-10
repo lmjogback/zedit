@@ -164,3 +164,9 @@ def soa_to_send(base_rds, new_rds, live):
             conflicts.append(f.upper())
     fields["serial"] = (serial_max(base_rds[0].serial, live[0].serial) + 1) % 2**32
     return dns.rdataset.from_rdata(live.ttl, live[0].replace(**fields)), conflicts
+
+
+def soa_conflict_message(conflicts):
+    return (
+        f"SOA {', '.join(conflicts)} changed both by you and on the server since the transfer; nothing sent."
+    )

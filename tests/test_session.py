@@ -2,6 +2,7 @@ import os
 import shlex
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import dns.exception
 import dns.name
@@ -9,7 +10,7 @@ import dns.zone
 import pytest
 from helpers import ORIGIN, SOA, addrs, model, soa_rd, zone
 
-from zedit import changes, cli, rfc2136, session
+from zedit import changes, cli, session
 from zedit.model import ZeditError
 
 
@@ -21,24 +22,24 @@ def test_file_stem_is_a_safe_file_name():
 
 
 def verify_with(monkeypatch, results, serials=(), attempts=None):
-    """Run session.verify() with fetch() returning (or raising) each of results in
-    turn, and live_soa() answering with each of serials (then None: no answer)."""
+    """Run session.verify() with a backend whose fetch() returns (or raises) each
+    of results in turn, and whose current_soa() answers with each of serials
+    (then None: no answer)."""
     calls, live = iter(results), iter(serials)
 
-    def fetch(server, origin):
+    def fetch(origin):
         r = next(calls)
         if isinstance(r, Exception):
             raise r
         return r
 
-    monkeypatch.setattr(rfc2136, "fetch", fetch)
-    monkeypatch.setattr(
-        rfc2136, "live_soa", lambda server, origin: next((soa_rd(f"{n} 1 2 3 4") for n in live), None)
+    backend = SimpleNamespace(
+        fetch=fetch, current_soa=lambda origin: next((soa_rd(f"{n} 1 2 3 4") for n in live), None)
     )
     monkeypatch.setattr(session.time, "sleep", lambda s: None)
     base = zone("www A 192.0.2.10\n")
     new = zone("www A 192.0.2.11\n")
-    return session.verify(None, ORIGIN, changes.change_set(base, new), attempts=attempts or len(results))
+    return session.verify(backend, ORIGIN, changes.change_set(base, new), attempts=attempts or len(results))
 
 
 def test_verify_transfers_again_only_when_the_serial_moved(monkeypatch):

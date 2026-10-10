@@ -4,6 +4,7 @@ import pytest
 from helpers import ORIGIN, changeset, lines, model
 
 from zedit import changes, rfc2136
+from zedit.backend import Outcome
 
 
 def test_compute_update_minimal_and_ordered():
@@ -218,18 +219,33 @@ def send_with(monkeypatch, outcome):
 
 
 @pytest.mark.parametrize(
-    ("outcome", "ok", "can_rebase", "text"),
+    ("outcome", "expected", "text"),
     [
-        (rfc2136.dns.rcode.NOERROR, True, False, ""),
-        (rfc2136.dns.rcode.NXRRSET, False, True, "NXRRSET"),
-        (rfc2136.dns.rcode.YXRRSET, False, True, "YXRRSET"),
-        (rfc2136.dns.rcode.REFUSED, False, False, "REFUSED"),
-        (rfc2136.dns.rcode.NOTAUTH, False, False, "NOTAUTH"),
-        (rfc2136.dns.exception.Timeout(), False, True, "unknown whether"),
-        (EOFError(), False, True, "unknown whether"),
-        (ConnectionRefusedError(111, "Connection refused"), False, False, "Connection refused"),
+        (rfc2136.dns.rcode.NOERROR, Outcome.OK, ""),
+        (rfc2136.dns.rcode.NXRRSET, Outcome.REBASE, "NXRRSET"),
+        (rfc2136.dns.rcode.YXRRSET, Outcome.REBASE, "YXRRSET"),
+        (rfc2136.dns.rcode.REFUSED, Outcome.FAILED, "REFUSED"),
+        (rfc2136.dns.rcode.NOTAUTH, Outcome.FAILED, "NOTAUTH"),
+        (rfc2136.dns.exception.Timeout(), Outcome.REBASE, "unknown whether"),
+        (EOFError(), Outcome.REBASE, "unknown whether"),
+        (ConnectionRefusedError(111, "Connection refused"), Outcome.FAILED, "Connection refused"),
     ],
 )
-def test_send_update_outcomes(monkeypatch, outcome, ok, can_rebase, text):
+def test_send_update_outcomes(monkeypatch, outcome, expected, text):
     result = send_with(monkeypatch, outcome)
-    assert result[0] == ok and result[2] == can_rebase and text in result[1]
+    assert result.outcome is expected and text in result.message
+
+
+def test_backend_soa_conflict_is_previewed_and_offers_a_rebase(monkeypatch):
+    """The same SOA field changed by the edit and on the server: preview() names
+    it, and apply() sends nothing and offers a rebase."""
+    _, base, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 300\n")
+    _, mine, _ = model("", soa="@ 3600 IN SOA ns1 hm 100 7200 900 1209600 60\n")
+    _, live, _ = model("", soa="@ 3600 IN SOA ns1 hm 101 7200 900 1209600 120\n")
+    monkeypatch.setattr(rfc2136, "live_soa", lambda server, origin: live)
+    monkeypatch.setattr(rfc2136, "send_update", lambda *a: pytest.fail("sent despite the conflict"))
+    server = rfc2136.Rfc2136Backend("192.0.2.53", 53, "ns")
+    edit = changes.ChangeSet((), base, mine)
+    assert server.preview(ORIGIN, edit).soa_conflicts == ["MINIMUM"]
+    result = server.apply(ORIGIN, edit)
+    assert result.outcome is Outcome.REBASE and "SOA MINIMUM changed both by you" in result.message
