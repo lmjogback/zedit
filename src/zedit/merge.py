@@ -4,7 +4,7 @@ import dns.name
 import dns.rdataset
 import dns.rdatatype
 
-from zedit.model import SOA_EDITABLE, SOA_KEY, same, tname
+from zedit.model import SOA_EDITABLE, SOA_KEY, Zone, same, tname
 
 
 def merge_scalar(b, m, t):
@@ -73,26 +73,26 @@ def merge_soa(b, m, t):
     return dns.rdataset.from_rdata(t.ttl, t[0].replace(**fields)), note, conflicts
 
 
-def keep_base_case(base, base_soa, new, new_soa):
+def keep_base_case(base, new):
     """DNS names compare case-insensitively, so a change of letter case alone
     (www CNAME Target for target) is no change to the server: the UPDATE would
     leave the record as it is. Owner names, records and SOA names equal to ones
     in the base get the base's spelling back, so that the diff shows only what
-    is sent. -> (new, new_soa, keys whose case was put back)."""
-    out, reverted, base_keys = {}, [], {k: k for k in base}
-    for k, rds in new.items():
+    is sent. -> (new Zone, keys whose case was put back)."""
+    out, reverted, base_keys = {}, [], {k: k for k in base.records}
+    for k, rds in new.records.items():
         bk = base_keys.get(k, k)
-        old = {r: r for r in base[bk]} if bk in base else {}
+        old = {r: r for r in base.records[bk]} if bk in base.records else {}
         rds_out = [old.get(r, r) for r in rds]
         texts = [r.to_text() for r in rds]
         if bk.name.to_text() != k.name.to_text() or texts != [r.to_text() for r in rds_out]:
             reverted.append(bk)
             rds = dns.rdataset.from_rdata_list(rds.ttl, rds_out)
         out[bk] = rds
-    o, n = base_soa[0], new_soa[0]
+    new_soa, o, n = new.soa, base.soa[0], new.soa[0]
     names = {f: getattr(o, f) for f in ("mname", "rname") if getattr(o, f) == getattr(n, f)}
     soa_rd = n.replace(**names)
     if soa_rd.to_text() != n.to_text():
         reverted.insert(0, SOA_KEY)
         new_soa = dns.rdataset.from_rdata(new_soa.ttl, soa_rd)
-    return out, new_soa, reverted
+    return Zone(out, new_soa, new.hidden), reverted

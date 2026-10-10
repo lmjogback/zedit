@@ -1,6 +1,7 @@
 """Types, constants and helpers shared by the other modules."""
 
 import sys
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 import dns.name
@@ -51,6 +52,16 @@ Records = dict[RRKey, dns.rdataset.Rdataset]
 Hidden = dict[HiddenKey, dns.rdataset.Rdataset]
 SOA_KEY = RRKey(dns.name.empty, SOA)
 APEX_NS = RRKey(dns.name.empty, NS)
+
+
+@dataclass(frozen=True)
+class Zone:
+    """A zone as zedit sees it: the records that can be edited, the apex SOA,
+    and the read-only records (none for a zone read from a file)."""
+
+    records: Records
+    soa: dns.rdataset.Rdataset
+    hidden: Hidden = field(default_factory=dict)
 
 
 def tname(t):

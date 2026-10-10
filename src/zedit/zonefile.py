@@ -24,6 +24,7 @@ from zedit.model import (
     SOA_KEY,
     HiddenKey,
     RRKey,
+    Zone,
     display_key,
     tname,
 )
@@ -237,7 +238,7 @@ def parse_text(text, origin):
         raise ValueError(f"records not allowed (DNSSEC, CDS/CDNSKEY at the apex, or SOA outside it): {bad}")
     if soa is None:
         raise ValueError("SOA missing - it may be edited but not removed")
-    return m, soa
+    return Zone(m, soa)
 
 
 def check_cname(m):
@@ -268,7 +269,9 @@ def read_text(path):
 
 
 def parse_file(path, origin, base_soa):
-    m, soa = parse_text(read_text(path), origin)
+    """The edited zone in path, checked against the SOA as transferred."""
+    zone = parse_text(read_text(path), origin)
+    m, soa = zone.records, zone.soa
     o, n = base_soa[0], soa[0]
     locked = [f.upper() for f in LOCKED_SOA if getattr(o, f) != getattr(n, f)]
     if base_soa.ttl != soa.ttl:
@@ -279,7 +282,7 @@ def parse_file(path, origin, base_soa):
     if APEX_NS not in m:
         # The server would ignore deleting the last one (RFC 2136 §3.4.2.4)
         raise ValueError("the zone apex needs at least one NS record")
-    return m, soa
+    return zone
 
 
 def owner_text(name, origin, addresses):
