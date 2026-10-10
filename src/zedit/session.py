@@ -1,4 +1,19 @@
-"""An editing session: its files, the editor, the prompts and the main loop."""
+"""An editing session: its files, the editor, the prompts and the main loop.
+
+run() is the whole session. A new one transfers the zone and writes two files:
+the session file, which the user edits, and FILE.base, the zone as transferred,
+which the edit is compared with and which a rebase merges against. A resumed one
+(--resume FILE) reads both and first rebases the edit onto the zone as it is now.
+Then edit_loop() repeats until done:
+
+  next_edit()        open $EDITOR and parse the file, until it is valid
+  review()           show the diff and ask: send, edit again, show the script, or no
+  send_and_verify()  apply the ChangeSet and check the result with a new transfer
+  rebase()           if the server changed what the edit touches: merge, repeat
+
+The files stay until the update is verified, so an interrupted or failed session
+can always be resumed; zedit prints the command for it.
+"""
 
 import argparse
 import difflib
@@ -32,6 +47,7 @@ class SessionFiles:
 
     @property
     def basepath(self) -> str:
+        """FILE.base, the zone as transferred."""
         return self.path + ".base"
 
 
@@ -75,13 +91,16 @@ def write_session(files: SessionFiles, text: str, base_text: str) -> None:
     before either old file is replaced. FILE.new is the commit point: once it
     exists, the new pair is complete, and recover() finishes the switch after a
     failure or crash; before, the old pair is untouched."""
-    recover(files)
+    recover(files)  # finish an earlier switch first, so that its .new files aren't lost
     new, base_new = files.path + ".new", files.basepath + ".new"
     try:
+        # Each file is written to a temporary name and renamed when complete,
+        # so FILE.base.new and FILE.new are never seen half written
         os.replace(write_tmp(files.basepath, base_text), base_new)
-        os.replace(write_tmp(files.path, text), new)
+        os.replace(write_tmp(files.path, text), new)  # the commit point
         sync_dir(files.path)
     except BaseException:
+        # Not committed (or not durably): back to the old pair
         for p in (new, base_new):
             if os.path.lexists(p):
                 os.unlink(p)
@@ -93,7 +112,7 @@ def finish_switch(files: SessionFiles) -> None:
     """Replace the old pair with FILE.new and FILE.base.new, or with what is
     left of them. Each step can be repeated."""
     new, base_new = files.path + ".new", files.basepath + ".new"
-    if os.path.lexists(base_new):
+    if os.path.lexists(base_new):  # absent if this step was done before an interruption
         os.replace(base_new, files.basepath)
     os.replace(new, files.path)
     sync_dir(files.path)
@@ -116,11 +135,12 @@ def recover(files: SessionFiles) -> None:
 def rebase(opts: Options, backend: Backend, files: SessionFiles, base: Zone, mine: Zone) -> tuple[Zone, int]:
     """Transfer the zone again and merge mine into it, writing the session files.
     -> (the new base, number of conflicts)."""
-    theirs = backend.fetch(opts.origin)
+    theirs = backend.fetch(opts.origin)  # the zone as it is now: the new base
     merged = merge.merge3(base.records, mine.records, theirs.records)
     soa = merge.merge_soa(base.soa, mine.soa, theirs.soa)
     notes = {**merged.notes, SOA_KEY: soa.notes} if soa.notes else merged.notes
     conflicts = merged.conflicts + soa.conflicts
+    # Said in the file's header, for the user who opens it next
     extra = [f"; Rebased: serial {base.soa[0].serial} -> {theirs.soa[0].serial}."]
     extra += [f"; Removed by merge (empty RRset): {d}" for d in merged.dropped]
     write_session(
@@ -163,9 +183,10 @@ def verify(
     -> list of RRsets that don't match (empty on success)."""
     deadline = time.monotonic() + timeout
     bad: list[str] = []
-    serial = None
+    serial = None  # of the last transfer, if it succeeded
     for i in range(attempts):
         if i:
+            # 0.25, 0.5, 1, 2, 2, ... seconds between attempts, but not past the deadline
             time.sleep(max(min(0.25 * 2 ** (i - 1), 2, deadline - time.monotonic()), 0))
         if time.monotonic() >= deadline:
             return [*bad, f"(verification stopped after {timeout:g} seconds)"]
@@ -180,12 +201,14 @@ def verify(
             bad, serial = [f"(zone transfer for verification failed: {e})"], None
         else:
             serial = after.soa[0].serial
+            # Each changed RRset must now be as edited (c.new None: gone)
             bad = [
                 f"{c.key.name} {tname(c.key.rdtype)}"
                 for c in edit.rrsets
                 if not same(after.records.get(c.key), c.new)
             ]
             if soa is not None:
+                # Not the serial: the server may have bumped it again since (signing)
                 bad += [
                     f"SOA {f.upper()}"
                     for f in ("mname", *SOA_EDITABLE)
@@ -197,6 +220,7 @@ def verify(
 
 
 def show_diff(old_lines: list[str], new_lines: list[str], fromfile: str, tofile: str) -> None:
+    """Print a unified diff of the zone lines, coloured like git's on a terminal."""
     color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")  # https://no-color.org
     for line in difflib.unified_diff(old_lines, new_lines, fromfile, tofile, lineterm=""):
         if color and line.startswith("+") and not line.startswith("+++"):
@@ -226,6 +250,9 @@ def run_editor(path: str) -> int:
 
 
 def ask(prompt: str, choices: set[str]) -> str:
+    """Ask until the answer is one of choices or empty (the default, which the
+    prompt shows in capitals). End of input (Ctrl-D, or no terminal) answers
+    with the default."""
     while True:
         try:
             a = input(prompt).strip().lower()
@@ -236,7 +263,8 @@ def ask(prompt: str, choices: set[str]) -> str:
 
 
 def edit_until_valid(path: str, origin: dns.name.Name, base_soa: dns.rdataset.Rdataset) -> Zone | None:
-    """-> the edited Zone, or None if the user aborts."""
+    """Run the editor on path until the file parses and passes the checks, or the
+    user gives up. -> the edited Zone, or None if the user aborts."""
     while True:
         status = run_editor(path)
         if status != 0:
@@ -261,6 +289,9 @@ def file_stem(origin: dns.name.Name) -> str:
 
 
 def state_dir() -> str:
+    """$XDG_STATE_HOME/zedit (default ~/.local/state/zedit), created if needed.
+    Only warned about if others can read it: changing a directory's mode is
+    the user's decision, it may be shared on purpose."""
     d = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "zedit")
     os.makedirs(d, mode=0o700, exist_ok=True)  # the mode applies only if it is created
     if os.stat(d).st_mode & 0o077:
@@ -311,6 +342,8 @@ def new_session_path(origin: dns.name.Name) -> str:
 
 
 def hint(files: SessionFiles | None, args: argparse.Namespace, dry_run: bool = False) -> None:
+    """Tell the user where the session is and the command that resumes it (or,
+    after --dry-run, sends it), if there is a session to resume."""
     if files and os.path.exists(files.path):
         how = "Send them with" if dry_run else "Resume with"
         print(
@@ -320,6 +353,7 @@ def hint(files: SessionFiles | None, args: argparse.Namespace, dry_run: bool = F
 
 
 def cleanup(files: SessionFiles) -> None:
+    """Remove the session's files: it is done, or there was nothing in it."""
     for p in (files.path, files.basepath, files.path + ".new", files.basepath + ".new"):
         if os.path.lexists(p):
             os.unlink(p)
@@ -332,7 +366,7 @@ def discard_if_unchanged(files: SessionFiles, origin: dns.name.Name, base: Zone)
         new = zonefile.parse_file(files.path, origin, base.soa)
     except (dns.exception.DNSException, ValueError, OSError):
         return False
-    new, _ = merge.keep_base_case(base, new)
+    new, _ = merge.keep_base_case(base, new)  # a change of letter case is no change
     if (
         changes.soa_changed(base.soa, new.soa)
         or set(new.records) != set(base.records)
@@ -344,7 +378,9 @@ def discard_if_unchanged(files: SessionFiles, origin: dns.name.Name, base: Zone)
 
 
 def start(opts: Options, backend: Backend, files: SessionFiles, base: Zone) -> None:
-    """Write a new session for the zone as transferred (base)."""
+    """Write a new session for the zone as transferred (base): the file to edit
+    shows the read-only records (-a) and address owners (-A) if asked; the base
+    is the plain zone."""
     write_session(
         files,
         zonefile.render_file(
@@ -362,7 +398,7 @@ def start(opts: Options, backend: Backend, files: SessionFiles, base: Zone) -> N
 def resume(opts: Options, backend: Backend, files: SessionFiles) -> tuple[Zone, bool] | None:
     """Rebase a saved session onto the zone as it is now. -> (the new base,
     whether to open the editor first), or None if the user aborts."""
-    recover(files)
+    recover(files)  # a switch to a new pair may have been interrupted
     if not os.path.exists(files.basepath):
         raise ZeditError(f"{files.basepath} missing - cannot three-way merge without a base")
     try:
@@ -373,6 +409,7 @@ def resume(opts: Options, backend: Backend, files: SessionFiles) -> tuple[Zone, 
     try:
         mine = zonefile.parse_file(files.path, opts.origin, base.soa)
     except (dns.exception.DNSException, ValueError) as e:
+        # Saved after a failed parse, say: fix it before merging
         print(f"The saved file is invalid: {e}")
         mine = edit_until_valid(files.path, opts.origin, base.soa)
         if mine is None:
@@ -384,18 +421,18 @@ def resume(opts: Options, backend: Backend, files: SessionFiles) -> tuple[Zone, 
 def run(opts: Options, backend: Backend, args: argparse.Namespace) -> int:
     """A whole session, new or resumed (args.resume). -> exit status. Errors are
     reported here, and so is how to resume a session that is left."""
-    files = None
+    files = None  # set once there are files the user could resume
     try:
         if args.resume:
             files = SessionFiles(args.resume)
             started = resume(opts, backend, files)
         else:
-            base = backend.fetch(opts.origin)
+            base = backend.fetch(opts.origin)  # before creating files: a failure leaves none
             files = SessionFiles(new_session_path(opts.origin))
             start(opts, backend, files, base)
             started = base, True
         rc = 1 if started is None else edit_loop(opts, backend, args, files, *started)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:  # Ctrl-C outside the editor
         print()
         rc = 130
     except (ZeditError, OSError) as e:  # OSError: e.g. state directory not writable, disk full
@@ -412,6 +449,7 @@ def run(opts: Options, backend: Backend, args: argparse.Namespace) -> int:
 
 
 def show_preview(preview: Preview) -> None:
+    """Print what would be sent, and warn if the SOA conflicts."""
     print(preview.text)
     if preview.soa_conflicts:
         print(f"Warning: {changes.soa_conflict_message(preview.soa_conflicts)} Sending would offer a rebase.")
@@ -503,14 +541,17 @@ def edit_loop(
     base: Zone,
     need_edit: bool,
 ) -> int:
-    """Edit, review and send until done. -> exit status."""
+    """Edit, review and send until done. -> exit status (see README): 0 sent and
+    verified, or nothing to send; 1 aborted; 2 not sent; 3 sent, not verified.
+    base is the zone the edit is compared with; need_edit False shows the diff
+    of the session file as it is before opening the editor."""
     while True:
         new = next_edit(opts, files, base, need_edit)
-        if new is None:
+        if new is None:  # the user aborted the editor
             if discard_if_unchanged(files, opts.origin, base):
                 print("Aborted without changes.")
             return 1
-        need_edit = True
+        need_edit = True  # from now on, every round starts in the editor
         new = put_back_case(base, new)
         edit = changes.change_set(base, new)
         answer = review(opts, backend, base, new, edit)
@@ -519,7 +560,7 @@ def edit_loop(
             cleanup(files)
             return 0
         if answer == "e":
-            continue
+            continue  # back to the editor, the file as the user left it
         if answer != "y":
             print("Nothing sent.")
             return 2
@@ -531,5 +572,6 @@ def edit_loop(
         rc = send_and_verify(opts, backend, files, edit)
         if rc is not None:
             return rc
+        # The server changed what the edit touches, and the user chose to rebase
         base, conflicts = rebase(opts, backend, files, base, new)
         need_edit = conflicts > 0  # conflicts -> straight to the editor, otherwise diff first
