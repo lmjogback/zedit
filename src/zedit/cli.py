@@ -9,7 +9,7 @@ import dns.exception
 import dns.name
 
 from zedit import __version__, rfc2136, session
-from zedit.model import IDNA, Options, die
+from zedit.model import IDNA, Options, ZeditError
 
 
 def config_dir() -> str:
@@ -31,7 +31,7 @@ def find_keyfile(origin: dns.name.Name) -> str | None:
 
 def check_keyfile(path: str) -> None:
     if not os.path.isfile(path):
-        die(f"key file {path} not found")
+        raise ZeditError(f"key file {path} not found")
     if os.stat(path).st_mode & 0o077:
         print(f"zedit: warning: {path} is readable by group/others (chmod 600)", file=sys.stderr)
 
@@ -74,13 +74,12 @@ def make_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main() -> None:
-    args = make_parser().parse_args()
-
+def setup(args: argparse.Namespace) -> tuple[Options, rfc2136.Rfc2136Backend]:
+    """The zone, the server and the key from the command line."""
     try:
         origin = dns.name.from_text(args.zone, idna_codec=IDNA)
     except dns.exception.DNSException as e:
-        die(f"invalid zone name {args.zone!r}: {e}")
+        raise ZeditError(f"invalid zone name {args.zone!r}: {e}") from e
     host = args.server or rfc2136.primary_from_mname(origin)
     address = rfc2136.resolve(host, args.port)
     keyfile = args.keyfile or find_keyfile(origin)
@@ -92,6 +91,16 @@ def main() -> None:
     opts = Options(origin, args.show_all or args.no_rrsig, args.no_rrsig, args.addresses)
     if not args.server or not args.keyfile:
         print(f"Server: {label}  Key: {keyfile or 'none'}", file=sys.stderr)
+    return opts, server
+
+
+def main() -> None:
+    args = make_parser().parse_args()
+    try:
+        opts, server = setup(args)
+    except ZeditError as e:
+        print(f"zedit: {e}", file=sys.stderr)
+        sys.exit(1)
     sys.exit(session.run(opts, server, args))
 
 

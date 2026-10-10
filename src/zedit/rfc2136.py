@@ -24,7 +24,7 @@ import dns.zone
 from zedit import changes, zonefile
 from zedit.backend import Outcome, Preview, SendResult
 from zedit.changes import ChangeSet
-from zedit.model import APEX_NS, SOA, ZeditError, Zone, die, tname
+from zedit.model import APEX_NS, SOA, ZeditError, Zone, tname
 
 Keyring = dict[dns.name.Name, dns.tsig.Key]
 # What a failed query or transfer raises: TSIG errors (bad key or signature),
@@ -40,15 +40,17 @@ def load_bind_key(path: str) -> tuple[Keyring, dns.name.Name]:
         text = f.read()
     keys = KEY_STATEMENT.findall(text)
     if not keys:
-        die(f"no key statement found in {path}")
+        raise ZeditError(f"no key statement found in {path}")
     if len(keys) > 1:
         names = ", ".join(name for name, _ in keys)
-        die(f"{path} has {len(keys)} key statements ({names}); a key file must hold a single key")
+        raise ZeditError(
+            f"{path} has {len(keys)} key statements ({names}); a key file must hold a single key"
+        )
     ((name, body),) = keys
     alg = re.search(r'algorithm\s+"?([\w.-]+)"?\s*;', body)
     sec = re.search(r'secret\s+"([^"]+)"\s*;', body)
     if not (alg and sec):
-        die(f"algorithm/secret missing in {path}")
+        raise ZeditError(f"algorithm/secret missing in {path}")
     kr = dns.tsigkeyring.from_text({name: (alg.group(1), sec.group(1))})
     return kr, dns.name.from_text(name)
 
@@ -296,9 +298,9 @@ def resolve(host: str, port: int) -> str:
     try:
         return asyncio.run(connect())
     except socket.gaierror as e:
-        die(f"cannot resolve {host}: {e}")
+        raise ZeditError(f"cannot resolve {host}: {e}") from e
     except (OSError, asyncio.TimeoutError) as e:
-        die(f"cannot connect to {host} port {port}: {str(e) or 'timed out'}")
+        raise ZeditError(f"cannot connect to {host} port {port}: {str(e) or 'timed out'}") from e
 
 
 def primary_from_mname(origin: dns.name.Name) -> str:
@@ -306,5 +308,7 @@ def primary_from_mname(origin: dns.name.Name) -> str:
     try:
         answer = dns.resolver.resolve(origin, "SOA", lifetime=10)
     except dns.exception.DNSException as e:
-        die(f"cannot look up the SOA of {origin} to find its primary ({e}); use -s SERVER")
+        raise ZeditError(
+            f"cannot look up the SOA of {origin} to find its primary ({e}); use -s SERVER"
+        ) from e
     return answer[0].mname.to_text()
