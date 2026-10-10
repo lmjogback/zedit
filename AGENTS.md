@@ -25,8 +25,10 @@ lists what the code doesn't tell you.
 - Keep README.md in step: options table, exit statuses, "Behaviour" section;
   and docs/signaling.md for anything about CDS/CDNSKEY or signals.
 - A new command-line option also goes into `resume_command()` in
-  `src/zedit/session.py` (if it should carry over to `--resume`) and into
-  `test_resume_command_keeps_the_options`. Nothing catches a forgotten one.
+  `src/zedit/session.py` and `CARRIED` in `tests/test_session.py` (if it
+  should carry over to `--resume`), or into `NOT_CARRIED`; the tests fail
+  until it is in one of them. A carried option must also be set in one of
+  `RESUME_ARGVS`.
 
 ## dnspython
 
