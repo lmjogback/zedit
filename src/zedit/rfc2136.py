@@ -27,6 +27,10 @@ from zedit.changes import ChangeSet
 from zedit.model import APEX_NS, SOA, ZeditError, Zone, die, tname
 
 Keyring = dict[dns.name.Name, dns.tsig.Key]
+# What a failed query or transfer raises: TSIG errors (bad key or signature),
+# a refused or failed transfer (dns.xfr.TransferError), timeouts, connection
+# errors, and EOFError when the server closes the connection.
+QUERY_ERRORS = (dns.exception.DNSException, OSError, EOFError)
 KEY_STATEMENT = re.compile(r'key\s+"?([^"\s{]+)"?\s*\{(.*?)\}\s*;', re.S)
 
 
@@ -91,7 +95,7 @@ def fetch(server: Rfc2136Backend, origin: dns.name.Name) -> Zone:
             lifetime=120,
         )
         zone = dns.zone.from_xfr(xfr, relativize=True)
-    except Exception as e:  # dnspython raises a whole zoo of types here
+    except QUERY_ERRORS as e:
         raise ZeditError(f"AXFR failed: {e}") from e
     model, soa, hidden = zonefile.to_model(zone)
     if soa is None:
@@ -179,7 +183,7 @@ def live_soa(server: Rfc2136Backend, origin: dns.name.Name) -> dns.rdataset.Rdat
                     rrset.ttl,
                     rd.replace(mname=rd.mname.relativize(origin), rname=rd.rname.relativize(origin)),
                 )
-    except Exception:
+    except QUERY_ERRORS:
         pass
     return None
 

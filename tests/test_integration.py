@@ -202,6 +202,34 @@ def saved_files(tmp):
     return os.listdir(d) if d.exists() else []
 
 
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("wrong secret", "AXFR failed: The peer didn't like the signature"),
+        ("no key", "AXFR failed: Zone transfer error: REFUSED"),
+        ("closed port", "cannot connect to 127.0.0.1 port"),  # found before the transfer
+    ],
+)
+def test_failed_transfer_is_an_error(tmp_path, case, message):
+    """A transfer that fails, or a server that can't be reached, is an error with
+    exit status 1, and leaves no session behind."""
+    with run_named(tmp_path, "unsigned") as (port, key, tmp):
+        if case == "wrong secret":
+            bad = tmp / "bad.key"
+            bad.write_text('key "admin" { algorithm hmac-sha256; secret "c2VjcmV0c2VjcmV0c2VjcmV0"; };\n')
+            bad.chmod(0o600)
+            key = bad
+        elif case == "no key":
+            key = None
+        else:
+            port = free_port()
+        ed = write_editor(tmp, "exit 1\n")
+        r = run_zedit(port, key, tmp, ed, "")
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert f"zedit: {message}" in r.stderr, r.stderr
+        assert saved_files(tmp) == []
+
+
 def test_unrelated_concurrent_change_does_not_conflict(server):
     port, key, tmp = server
     ed = write_editor(
