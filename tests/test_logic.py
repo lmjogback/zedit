@@ -64,6 +64,18 @@ def test_ttl_change_replaces_rrset():
     assert final == []
 
 
+def test_record_count_counts_records_not_rrsets():
+    """The summary before sending counts records, as nsupdate lines did."""
+    old, _, _ = model("www 300 A 192.0.2.1\nold 300 A 192.0.2.9\nmx 300 A 192.0.2.5\n")
+    new, _, _ = model(
+        "www 300 A 192.0.2.1\nwww 300 A 192.0.2.2\nmx 300 A 192.0.2.6\n"
+        "tens 60 A 127.0.0.10\ntens 60 A 127.0.0.11\ntens 60 A 127.0.0.12\n"
+    )
+    dels, adds, final = cli.compute_update(old, new, ORIGIN)
+    assert cli.record_count(dels + final) == len(lines(dels + final)) == 2  # mx record, old RRset
+    assert cli.record_count(adds) == len(lines(adds)) == 5  # mx, tens x3, www
+
+
 @pytest.mark.parametrize(
     ("old_ns", "new_ns", "adds", "final"),
     [
