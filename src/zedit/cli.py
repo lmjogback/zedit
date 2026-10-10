@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Command line: options, server and key lookup, and main()."""
+"""Command line: options, server and key lookup, and main().
+
+main() parses the options, then setup() finds the zone's primary server (from
+the SOA MNAME unless -s is given), connects to it and loads the TSIG key; the
+session itself is session.run(). Errors before the session starts are reported
+here, as "zedit: MESSAGE" with exit status 1.
+"""
 
 import argparse
 import os
@@ -13,6 +19,7 @@ from zedit.model import IDNA, VERIFY_TIMEOUT, Options, ZeditError
 
 
 def config_dir() -> str:
+    """$XDG_CONFIG_HOME/zedit, default ~/.config/zedit: where the keys are."""
     return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "zedit")
 
 
@@ -30,6 +37,7 @@ def find_keyfile(origin: dns.name.Name) -> str | None:
 
 
 def check_keyfile(path: str) -> None:
+    """The key file must exist; it should be readable only by its owner."""
     if not os.path.isfile(path):
         raise ZeditError(f"key file {path} not found")
     if os.stat(path).st_mode & 0o077:
@@ -41,7 +49,7 @@ def port(text: str) -> int:
     try:
         n = int(text)
     except ValueError:
-        n = 0
+        n = 0  # reported below, with the same message
     if not 1 <= n <= 65535:
         raise argparse.ArgumentTypeError(f"{text!r} is not a port number (1-65535)")
     return n
@@ -52,13 +60,16 @@ def seconds(text: str) -> float:
     try:
         n = float(text)
     except ValueError:
-        n = 0
-    if not 0 < n < float("inf"):
+        n = 0  # reported below, with the same message
+    if not 0 < n < float("inf"):  # also rejects nan, which compares false
         raise argparse.ArgumentTypeError(f"{text!r} is not a positive number of seconds")
     return n
 
 
 def make_parser() -> argparse.ArgumentParser:
+    """The command line. A new option should also go into
+    session.resume_command() if a resumed session should keep it; the tests
+    check that every option is accounted for there."""
     ap = argparse.ArgumentParser(
         prog="zedit", description="Edit a dynamic DNS zone via AXFR + $EDITOR + DNS UPDATE"
     )
@@ -110,20 +121,25 @@ def setup(args: argparse.Namespace) -> tuple[Options, rfc2136.Rfc2136Backend]:
     except dns.exception.DNSException as e:
         raise ZeditError(f"invalid zone name {args.zone!r}: {e}") from e
     host = args.server or rfc2136.primary_from_mname(origin)
+    # One address for the whole session, so that the transfer, the UPDATE and
+    # the verification all reach the same server
     address = rfc2136.resolve(host, args.port)
     keyfile = args.keyfile or find_keyfile(origin)
     if keyfile:
         check_keyfile(keyfile)
+    # "ns1.example.net (192.0.2.53)", or just the address if that was given
     label = address if host.rstrip(".") == address else f"{host.rstrip('.')} ({address})"
     keyring, keyname = rfc2136.load_bind_key(keyfile) if keyfile else (None, None)
     server = rfc2136.Rfc2136Backend(address, args.port, label, keyring, keyname)
     opts = Options(origin, args.show_all or args.no_rrsig, args.no_rrsig, args.addresses, args.verify_timeout)
+    # Say what was looked up, since the user didn't name it
     if not args.server or not args.keyfile:
         print(f"Server: {label}  Key: {keyfile or 'none'}", file=sys.stderr)
     return opts, server
 
 
 def main() -> None:
+    """The zedit command."""
     args = make_parser().parse_args()
     try:
         opts, server = setup(args)
