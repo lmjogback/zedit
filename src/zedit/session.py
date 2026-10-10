@@ -6,11 +6,11 @@ import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterable
 from dataclasses import dataclass
 
 import dns.exception
@@ -51,21 +51,66 @@ def write_tmp(path: str, text: str) -> str:
     return tmp
 
 
-def write_pair(files: Iterable[tuple[str, str]]) -> None:
-    """Replace each (path, text) of files, the session file and its base, which
-    must agree. All are written out first, so a failure there (disk full) leaves
-    the old ones in place; only a crash between the renames that follow could
-    leave one old and one new."""
-    tmps = []
+def sync_dir(path: str) -> None:
+    """fsync the directory holding path, so that renames in it are on disk."""
+    fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
     try:
-        for path, text in files:
-            tmps.append((write_tmp(path, text), path))
-        while tmps:
-            os.replace(*tmps[0])
-            tmps.pop(0)
+        os.fsync(fd)
     finally:
-        for tmp, _ in tmps:
-            os.unlink(tmp)
+        os.close(fd)
+
+
+def check_ours(path: str) -> None:
+    """A file zedit left behind is used only if it is a regular file of the
+    user's, not one planted in a shared directory."""
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+        raise ZeditError(f"{path} is not a file of yours; remove it to resume")
+
+
+def write_session(files: SessionFiles, text: str, base_text: str) -> None:
+    """Replace the session file with text and its base with base_text. The two
+    must agree (the base's serial is the one the edit is locked to), so the new
+    pair is written out completely first, as FILE.base.new and then FILE.new,
+    before either old file is replaced. FILE.new is the commit point: once it
+    exists, the new pair is complete, and recover() finishes the switch after a
+    failure or crash; before, the old pair is untouched."""
+    recover(files)
+    new, base_new = files.path + ".new", files.basepath + ".new"
+    try:
+        os.replace(write_tmp(files.basepath, base_text), base_new)
+        os.replace(write_tmp(files.path, text), new)
+        sync_dir(files.path)
+    except BaseException:
+        for p in (new, base_new):
+            if os.path.lexists(p):
+                os.unlink(p)
+        raise
+    finish_switch(files)
+
+
+def finish_switch(files: SessionFiles) -> None:
+    """Replace the old pair with FILE.new and FILE.base.new, or with what is
+    left of them. Each step can be repeated."""
+    new, base_new = files.path + ".new", files.basepath + ".new"
+    if os.path.lexists(base_new):
+        os.replace(base_new, files.basepath)
+    os.replace(new, files.path)
+    sync_dir(files.path)
+
+
+def recover(files: SessionFiles) -> None:
+    """Finish a switch to a new pair that a failure or crash interrupted after
+    FILE.new was written, or remove a FILE.base.new from one interrupted before."""
+    new, base_new = files.path + ".new", files.basepath + ".new"
+    if os.path.lexists(new):
+        for p in (new, base_new):
+            if os.path.lexists(p):
+                check_ours(p)
+        finish_switch(files)
+    elif os.path.lexists(base_new):
+        check_ours(base_new)
+        os.unlink(base_new)
 
 
 def rebase(opts: Options, backend: Backend, files: SessionFiles, base: Zone, mine: Zone) -> tuple[Zone, int]:
@@ -78,23 +123,19 @@ def rebase(opts: Options, backend: Backend, files: SessionFiles, base: Zone, min
     conflicts = merged.conflicts + soa.conflicts
     extra = [f"; Rebased: serial {base.soa[0].serial} -> {theirs.soa[0].serial}."]
     extra += [f"; Removed by merge (empty RRset): {d}" for d in merged.dropped]
-    write_pair(
-        (
-            (
-                files.path,
-                zonefile.render_file(
-                    soa.soa,
-                    merged.records,
-                    opts.origin,
-                    backend.label,
-                    notes,
-                    extra,
-                    zonefile.shown(opts, theirs.hidden),
-                    opts.addresses,
-                ),
-            ),
-            (files.basepath, zonefile.render_file(theirs.soa, theirs.records, opts.origin, backend.label)),
-        )
+    write_session(
+        files,
+        zonefile.render_file(
+            soa.soa,
+            merged.records,
+            opts.origin,
+            backend.label,
+            notes,
+            extra,
+            zonefile.shown(opts, theirs.hidden),
+            opts.addresses,
+        ),
+        zonefile.render_file(theirs.soa, theirs.records, opts.origin, backend.label),
     )
     print(
         f"Rebased onto serial {theirs.soa[0].serial}: {len(notes)} RRset(s) changed on "
@@ -279,8 +320,8 @@ def hint(files: SessionFiles | None, args: argparse.Namespace, dry_run: bool = F
 
 
 def cleanup(files: SessionFiles) -> None:
-    for p in (files.path, files.basepath):
-        if os.path.exists(p):
+    for p in (files.path, files.basepath, files.path + ".new", files.basepath + ".new"):
+        if os.path.lexists(p):
             os.unlink(p)
 
 
@@ -304,27 +345,24 @@ def discard_if_unchanged(files: SessionFiles, origin: dns.name.Name, base: Zone)
 
 def start(opts: Options, backend: Backend, files: SessionFiles, base: Zone) -> None:
     """Write a new session for the zone as transferred (base)."""
-    write_pair(
-        (
-            (files.basepath, zonefile.render_file(base.soa, base.records, opts.origin, backend.label)),
-            (
-                files.path,
-                zonefile.render_file(
-                    base.soa,
-                    base.records,
-                    opts.origin,
-                    backend.label,
-                    hidden=zonefile.shown(opts, base.hidden),
-                    addresses=opts.addresses,
-                ),
-            ),
-        )
+    write_session(
+        files,
+        zonefile.render_file(
+            base.soa,
+            base.records,
+            opts.origin,
+            backend.label,
+            hidden=zonefile.shown(opts, base.hidden),
+            addresses=opts.addresses,
+        ),
+        zonefile.render_file(base.soa, base.records, opts.origin, backend.label),
     )
 
 
 def resume(opts: Options, backend: Backend, files: SessionFiles) -> tuple[Zone, bool] | None:
     """Rebase a saved session onto the zone as it is now. -> (the new base,
     whether to open the editor first), or None if the user aborts."""
+    recover(files)
     if not os.path.exists(files.basepath):
         raise ZeditError(f"{files.basepath} missing - cannot three-way merge without a base")
     try:
