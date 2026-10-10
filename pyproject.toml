@@ -29,6 +29,7 @@ Repository = "https://github.com/lmjogback/zedit"
 
 [dependency-groups]
 dev = [
+    "mypy>=2.4.0",
     "pytest>=8",
     "ruff>=0.6",
 ]
@@ -40,6 +41,11 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["integration: requires named, nsupdate and tsig-keygen (BIND 9)"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+check_untyped_defs = true
 
 [tool.ruff]
 line-length = 110
