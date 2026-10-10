@@ -30,6 +30,15 @@ lists what the code doesn't tell you.
   until it is in one of them. A carried option must also be set in one of
   `RESUME_ARGVS`.
 
+## Code layout
+
+`src/zedit/__init__.py` has the flow and a map of the modules. The boundary
+to keep: `session.py` talks to the server only through the `Backend`
+protocol in `backend.py`, with a `ChangeSet` (`changes.py`) saying what an
+edit changes. Everything RFC 2136 (prerequisites, apex NS order, serial
++1, the nsupdate script, TSIG) stays in `rfc2136.py`, so that another
+backend, e.g. a REST API, can be added beside it.
+
 ## dnspython
 
 `zonefile._Reader` overrides the private `dns.zonefile.Reader._eat_line()` and
