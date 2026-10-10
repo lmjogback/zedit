@@ -10,7 +10,7 @@ import dns.zone
 import pytest
 from helpers import ORIGIN, SOA, addrs, model, soa_rd, zone
 
-from zedit import changes, cli, session
+from zedit import changes, cli, session, zonefile
 from zedit.model import Options, ZeditError
 
 
@@ -187,34 +187,93 @@ def test_state_dir_warns_if_others_can_access_it(tmp_path, monkeypatch, capsys):
     assert "is accessible by group/others" in capsys.readouterr().err
 
 
-def test_writes_are_private_and_ignores_planted_symlinks(tmp_path):
-    path = tmp_path / "s.zone"
-    target = tmp_path / "elsewhere"
-    (tmp_path / "s.zone.tmp").symlink_to(target)  # the name the old code wrote to
-    session.write_pair(((str(path), "x\n"),))
-    assert path.read_text() == "x\n" and oct(path.stat().st_mode & 0o777) == "0o600"
-    assert not target.exists()
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["s.zone", "s.zone.tmp"]
+def session_pair(serial):
+    """A session file and its base that agree, with the given serial."""
+    soa = SOA.replace(" 100 ", f" {serial} ")
+    base = "$TTL 300\n" + soa + "@ NS ns1\n"
+    return base + f"www A 192.0.2.{serial % 256}\n", base
 
 
-def test_failed_write_leaves_the_session_pair_alone(tmp_path, monkeypatch):
-    """If writing the second file fails (say the disk is full), neither file is
-    replaced: an edit with the new serial next to the old base couldn't be resumed."""
-    edit, base = tmp_path / "s.zone", tmp_path / "s.zone.base"
-    edit.write_text("old edit\n")
-    base.write_text("old base\n")
-    write_tmp = session.write_tmp
-
-    def full_disk(path, text):
-        if path == str(base):
-            raise OSError(28, "No space left on device")
-        return write_tmp(path, text)
-
-    monkeypatch.setattr(session, "write_tmp", full_disk)
-    with pytest.raises(OSError):
-        session.write_pair(((str(edit), "new edit\n"), (str(base), "new base\n")))
-    assert (edit.read_text(), base.read_text()) == ("old edit\n", "old base\n")
+def test_session_files_are_private(tmp_path):
+    files = session.SessionFiles(str(tmp_path / "s.zone"))
+    session.write_session(files, "edit\n", "base\n")
+    for p in (files.path, files.basepath):
+        assert oct(os.stat(p).st_mode & 0o777) == "0o600"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["s.zone", "s.zone.base"]
+
+
+@pytest.mark.parametrize("name", ["s.zone.new", "s.zone.base.new"])
+def test_planted_files_are_not_used(tmp_path, name):
+    """In a shared directory, someone else could leave FILE.new for recover() to
+    take as the user's session; a symlink (or another user's file) is refused."""
+    target = tmp_path / "elsewhere"
+    target.write_text("planted\n")
+    (tmp_path / name).symlink_to(target)
+    files = session.SessionFiles(str(tmp_path / "s.zone"))
+    with pytest.raises(ZeditError, match="is not a file of yours"):
+        session.write_session(files, "edit\n", "base\n")
+    assert target.read_text() == "planted\n"
+
+
+# The steps of write_session() that can fail, in order
+STEPS = [
+    "write base",
+    "rename base",
+    "write edit",
+    "rename edit",
+    "sync",
+    "replace base",
+    "replace edit",
+    "sync 2",
+]
+
+
+@pytest.mark.parametrize("crash", [False, True], ids=["error", "crash"])
+@pytest.mark.parametrize("step", STEPS)
+def test_interrupted_switch_leaves_a_whole_pair(tmp_path, monkeypatch, step, crash):
+    """Whatever step fails, by an exception (cleanup runs) or a crash (nothing
+    more runs), the session file and its base are afterwards, once recover()
+    has run as --resume does, either both old or both new, and they agree."""
+    files = session.SessionFiles(str(tmp_path / "s.zone"))
+    old, new = session_pair(100), session_pair(101)
+    with open(files.path, "w") as f:
+        f.write(old[0])
+    with open(files.basepath, "w") as f:
+        f.write(old[1])
+
+    calls = {"write": 0, "rename": 0, "sync": 0}
+    write_tmp, replace, sync_dir = session.write_tmp, os.replace, session.sync_dir
+
+    def counted(kind, fn, names):
+        def wrapper(*args):
+            calls[kind] += 1
+            if names[calls[kind] - 1] == step:
+                raise OSError(5, f"injected at {step}")
+            return fn(*args)
+
+        return wrapper
+
+    with monkeypatch.context() as m:
+        m.setattr(session, "write_tmp", counted("write", write_tmp, ["write base", "write edit"]))
+        m.setattr(
+            session.os,
+            "replace",
+            counted("rename", replace, ["rename base", "rename edit", "replace base", "replace edit"]),
+        )
+        m.setattr(session, "sync_dir", counted("sync", sync_dir, ["sync", "sync 2"]))
+        if crash:
+            m.setattr(session.os, "unlink", lambda p: None)  # nothing is cleaned up
+        with pytest.raises(OSError, match="injected"):
+            session.write_session(files, *new)
+
+    session.recover(files)
+    pair = (open(files.path).read(), open(files.basepath).read())
+    assert pair in (old, new)
+    committed = STEPS.index(step) >= STEPS.index("replace base") or (crash and step == "sync")
+    assert pair == (new if committed else old)
+    assert not any(p.name.endswith(".new") for p in tmp_path.iterdir())
+    base = zonefile.parse_text(pair[1], ORIGIN)
+    zonefile.parse_file(files.path, ORIGIN, base.soa)  # agrees with its base: resumable
 
 
 def test_ctrl_c_in_the_editor_doesnt_stop_zedit(tmp_path):

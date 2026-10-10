@@ -40,10 +40,12 @@
   fixed `FILE.tmp` name, following a symlink planted there (relevant when
   `--resume FILE` is in a shared directory). They are now written through a
   new, exclusively created file readable only by you.
-- Fix: if writing the rebased session failed halfway (say the disk was full),
-  the edit could be left with the server's new serial next to the old base, and
-  `--resume` then failed with "locked SOA fields changed: SERIAL". Both files
-  are now written out before either is replaced.
+- Fix: if writing the rebased session failed halfway (say the disk was full,
+  or zedit crashed between replacing the two files), the edit could be left
+  with the server's new serial next to the old base, and `--resume` then failed
+  with "locked SOA fields changed: SERIAL". The new pair is now written out
+  completely as `FILE.new` and `FILE.base.new` before either file is replaced,
+  and `--resume` finishes an interrupted switch.
 - Fix: Ctrl-C or Ctrl-\ while the editor ran also interrupted zedit, if the
   editor doesn't take the terminal's signal keys for itself (vim and nano do).
   As git does, zedit now ignores them until the editor exits.
