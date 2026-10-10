@@ -1,4 +1,12 @@
-"""Three-way merge of the zone as transferred, as edited and as on the server."""
+"""Three-way merge of the zone as transferred, as edited and as on the server.
+
+When the server rejects an UPDATE because an RRset the edit touches has changed
+since the transfer, or when a saved session is resumed, the edit is "rebased":
+the zone is transferred again, and the user's changes (base -> mine) are
+applied to the zone as it is now (theirs), RRset by RRset, as git merges lines.
+Where both sides changed the same RRset, the result is marked in the session
+file for the user to review before anything is sent.
+"""
 
 from dataclasses import dataclass
 from typing import TypeVar
@@ -34,7 +42,10 @@ class SoaMerge:
 
 
 def merge_scalar(b: T | None, m: T, t: T) -> tuple[T, bool]:
-    """-> (value, conflict?). On conflict, mine wins."""
+    """Merge one value, e.g. a TTL or an SOA field, as it was (b, None if it
+    didn't exist), as I changed it (m) and as the server has it now (t).
+    -> (value, conflict?): the side that changed it wins; if both did, to
+    different values, that is a conflict, and mine wins."""
     if m == b:
         return t, False
     if t == b or m == t:
@@ -48,12 +59,15 @@ def merge3(base: Records, mine: Records, theirs: Records) -> MergeResult:
     except for single-record types (CNAME etc.), where two values are a conflict."""
     merged, notes, dropped, conflicts = {}, {}, [], 0
     for k in set(base) | set(mine) | set(theirs):
+        # None: the RRset doesn't exist on that side
         b, m, t = base.get(k), mine.get(k), theirs.get(k)
         if same(m, b):
-            r = t
+            r = t  # I didn't touch it: the server's version, whatever happened there
         elif same(t, b) or same(m, t):
-            r = m
+            r = m  # only I changed it, or the server already has my change
         else:
+            # Both changed it: start from the server's records, add those I
+            # added and remove those I removed, each compared with the base
             bs, ms, ts = (set(x) if x else set() for x in (b, m, t))
             rd = (ts | (ms - bs)) - (bs - ms)
             note = ["; MERGED: changed both by you and on the server - please review"]
@@ -82,6 +96,7 @@ def merge3(base: Records, mine: Records, theirs: Records) -> MergeResult:
                 rd = set(m)
             r = dns.rdataset.from_rdata_list(ttl, list(rd)) if rd else None
             if r is None:
+                # Both sides' changes together leave no records: said in the file
                 dropped.append(f"{k.name} {tname(k.rdtype)}")
             else:
                 notes[k] = note
@@ -91,6 +106,7 @@ def merge3(base: Records, mine: Records, theirs: Records) -> MergeResult:
 
 
 def merge_soa(b: dns.rdataset.Rdataset, m: dns.rdataset.Rdataset, t: dns.rdataset.Rdataset) -> SoaMerge:
+    """Merge the SOA field by field: base (b), mine (m), theirs (t)."""
     fields, note, conflicts = {}, [], 0
     for f in SOA_EDITABLE:
         bv, mv, tv = getattr(b[0], f), getattr(m[0], f), getattr(t[0], f)
@@ -108,6 +124,8 @@ def keep_base_case(base: Zone, new: Zone) -> tuple[Zone, list[RRKey]]:
     leave the record as it is. Owner names, records and SOA names equal to ones
     in the base get the base's spelling back, so that the diff shows only what
     is sent. -> (new Zone, keys whose case was put back)."""
+    # Dict lookups compare names case-insensitively, as DNS does, and give back
+    # the base's own key or record: its spelling
     out, reverted, base_keys = {}, [], {k: k for k in base.records}
     for k, rds in new.records.items():
         bk = base_keys.get(k, k)
@@ -118,6 +136,7 @@ def keep_base_case(base: Zone, new: Zone) -> tuple[Zone, list[RRKey]]:
             reverted.append(bk)
             rds = dns.rdataset.from_rdata_list(rds.ttl, rds_out)
         out[bk] = rds
+    # In the SOA, only MNAME and RNAME are names; the other fields are numbers
     new_soa, o, n = new.soa, base.soa[0], new.soa[0]
     names = {f: getattr(o, f) for f in ("mname", "rname") if getattr(o, f) == getattr(n, f)}
     soa_rd = n.replace(**names)

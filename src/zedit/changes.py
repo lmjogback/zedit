@@ -1,5 +1,11 @@
 """What an edit changes, independent of how it is sent: the ChangeSet a backend
-receives, the SOA to send, and warnings."""
+receives, the SOA to send, and warnings.
+
+An edit is compared with the zone as transferred (the base) RRset by RRset:
+an RRset is changed if its records or its TTL differ, or if it was added or
+removed. Only changed RRsets are sent, so concurrent changes elsewhere in the
+zone (DHCP, ACME, another admin) are left alone.
+"""
 
 import re
 from dataclasses import dataclass
@@ -45,10 +51,12 @@ class ChangeSet:
 
     @property
     def soa_changed(self) -> bool:
+        """Whether the edit changes the SOA (any field, or its TTL)."""
         return soa_changed(self.base_soa, self.new_soa)
 
 
 def change_set(base: Zone, new: Zone) -> ChangeSet:
+    """The changes from the zone as transferred (base) to the edited zone (new)."""
     keys = sorted(set(base.records) | set(new.records), key=sortkey)
     return ChangeSet(
         tuple(
@@ -76,6 +84,7 @@ def signal_warnings(base: Records, new: Records) -> list[str]:
 
 
 TXT = int(dns.rdatatype.TXT)
+# An SPF record is a TXT record that starts with this version tag (RFC 7208 §4.5)
 SPF_RECORD = re.compile(rb"v=spf1(?: |$)", re.IGNORECASE)
 
 
@@ -102,6 +111,7 @@ def ascii_warnings(base: Records, new: Records) -> list[str]:
         if k.rdtype != TXT:
             continue
         old = base.get(k) or ()
+        # Only records the user adds: one that was already there is the server's business
         for rd in sorted(new[k], key=lambda r: r.to_text()):
             kind = ascii_kind(k.name, rd)
             if kind and rd not in old and any(b < 0x20 or b > 0x7E for s in rd.strings for b in s):
@@ -113,7 +123,9 @@ def ascii_warnings(base: Records, new: Records) -> list[str]:
 
 
 def serial_max(a: int, b: int | None) -> int:
-    """The greater of two serials in RFC 1982 serial number arithmetic."""
+    """The greater of two serials in RFC 1982 serial number arithmetic. Serials
+    are 32 bits and wrap around: 3 is greater than 4294967290, since counting
+    up from 4294967290 reaches 3 sooner than counting down does. b None: a."""
     if b is None:
         return a
     return b if 0 < (b - a) % 2**32 < 2**31 else a
@@ -126,6 +138,7 @@ def change_count(edit: ChangeSet) -> tuple[int, int]:
     dels = adds = 0
     for c in edit.rrsets:
         o, n = c.old, c.new
+        # The diff shows a record as removed and added when only its TTL changes
         if o is not None and n is not None and o.ttl == n.ttl:
             dels += sum(r not in n for r in o)
             adds += sum(r not in o for r in n)
@@ -136,6 +149,7 @@ def change_count(edit: ChangeSet) -> tuple[int, int]:
 
 
 def soa_changed(old_rds: dns.rdataset.Rdataset, new_rds: dns.rdataset.Rdataset) -> bool:
+    """Whether two SOA RRsets differ in any field or in their TTL."""
     return old_rds.ttl != new_rds.ttl or old_rds[0] != new_rds[0]
 
 
@@ -162,6 +176,8 @@ def soa_to_send(
         raise ZeditError("cannot read the zone's current SOA from the server, so the SOA change was not sent")
     fields, conflicts = {}, []
     for f in SOA_EDITABLE:
+        # Changed only by the user: theirs; only on the server: the server's;
+        # by both to different values: a conflict, and nothing is sent
         fields[f], c = merge.merge_scalar(
             getattr(base_rds[0], f), getattr(new_rds[0], f), getattr(live[0], f)
         )
@@ -172,6 +188,7 @@ def soa_to_send(
 
 
 def soa_conflict_message(conflicts: list[str]) -> str:
+    """The message for SOA fields (by name) that conflict, see soa_to_send()."""
     return (
         f"SOA {', '.join(conflicts)} changed both by you and on the server since the transfer; nothing sent."
     )
