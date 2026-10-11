@@ -221,8 +221,10 @@ def live_soa(
             q.use_tsig(server.keyring, keyname=server.keyname)
         limit = SOA_QUERY_TIMEOUT if timeout is None else min(timeout, SOA_QUERY_TIMEOUT)
         r = dns.query.tcp(q, server.address, port=server.port, timeout=limit)
+        if r.rcode() != dns.rcode.NOERROR:
+            return None
         for rrset in r.answer:
-            if rrset.rdtype == dns.rdatatype.SOA:
+            if rrset.name == origin and rrset.rdtype == dns.rdatatype.SOA:
                 rd = rrset[0]
                 return dns.rdataset.from_rdata(
                     rrset.ttl,

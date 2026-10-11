@@ -178,6 +178,25 @@ def test_live_soa_names_are_relative_like_the_transfer(monkeypatch):
     assert rfc2136.live_soa(server, ORIGIN)[0].rname.to_text() == "hostmaster.example.net."
 
 
+@pytest.mark.parametrize(
+    "rcode, owner",
+    [("SERVFAIL", "example.com."), ("NOERROR", "other.example.")],
+    ids=["error-rcode", "other-name"],
+)
+def test_live_soa_takes_only_the_zones_soa_from_a_good_answer(monkeypatch, rcode, owner):
+    """An SOA in an answer that isn't NOERROR, or that belongs to another
+    name, is not the zone's current SOA."""
+
+    def tcp(q, server, port, timeout):
+        return rfc2136.dns.message.from_text(
+            f"id {q.id}\nopcode QUERY\nrcode {rcode}\nflags QR AA\n;ANSWER\n"
+            f"{owner} 3600 IN SOA ns1.example.com. hostmaster.example.com. 105 7200 900 1209600 300\n"
+        )
+
+    monkeypatch.setattr(rfc2136.dns.query, "tcp", tcp)
+    assert rfc2136.live_soa(rfc2136.Rfc2136Backend("192.0.2.53", 53, "ns"), ORIGIN) is None
+
+
 def plan_ops():
     """Prerequisites, deletes and adds for a typical edit."""
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\ngone TXT x\n")
