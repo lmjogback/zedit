@@ -11,8 +11,9 @@ comments.
 ## SOA
 
 RNAME, REFRESH, RETRY, EXPIRE and MINIMUM are editable. MNAME, SERIAL and the
-SOA record's own TTL are locked. Below the SOA record, comment lines explain
-each value as transferred:
+SOA record's own TTL are locked: if you change one, zedit says which and
+offers to open the file again, and sends nothing until it has its old value.
+Below the SOA record, comment lines explain each value as transferred:
 
 ```
 @      60 IN SOA    ns1.example.net. hostmaster.example.net. 2026100526 300 120 21600 60
@@ -44,7 +45,8 @@ www      300 IN A      192.0.2.10
 ```
 
 Being comments, they never reach the diff, the update or the merge, so editing
-or deleting them has no effect. `--no-rrsig` keeps the interesting ones
+or deleting them has no effect: unlike a locked SOA field, a change to them is
+not an error, it is simply ignored. `--no-rrsig` keeps the interesting ones
 (DNSKEY, CDS, CDNSKEY, NSEC3PARAM, TYPE65534) and drops the bulky ones.
 
 ## RRsets
