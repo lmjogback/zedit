@@ -18,7 +18,7 @@ import contextlib
 import re
 import socket
 from dataclasses import dataclass, replace
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import dns.exception
 import dns.message
@@ -151,7 +151,7 @@ class Op(NamedTuple):
          "delete":  delete these rdatas, or the whole RRset if there are none
          "add":     add these rdatas with this TTL"""
 
-    kind: str
+    kind: Literal["absent", "present", "delete", "add"]
     name: dns.name.Name
     rdtype: int
     ttl: int | None = None
@@ -265,7 +265,9 @@ def op_lines(op: Op, origin: dns.name.Name) -> list[str]:
         return [f"prereq yxrrset {name} IN {t} {rd}" for rd in rds]
     if op.kind == "delete":
         return [f"update delete {name} IN {t} {rd}" for rd in rds] or [f"update delete {name} IN {t}"]
-    return [f"update add {name} {op.ttl} IN {t} {rd}" for rd in rds]
+    if op.kind == "add":
+        return [f"update add {name} {op.ttl} IN {t} {rd}" for rd in rds]
+    raise AssertionError(f"unknown Op kind {op.kind!r}")
 
 
 def script_text(server: str, port: int, origin: dns.name.Name, ops: list[Op]) -> str:
@@ -289,8 +291,10 @@ def update_message(
             msg.present(op.name, *op.rdatas)
         elif op.kind == "delete":
             msg.delete(op.name, *(op.rdatas or (op.rdtype,)))
-        else:
+        elif op.kind == "add":
             msg.add(op.name, op.ttl, *op.rdatas)
+        else:
+            raise AssertionError(f"unknown Op kind {op.kind!r}")
     if keyring:
         msg.use_tsig(keyring, keyname=keyname)
     return msg
