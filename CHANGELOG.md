@@ -14,6 +14,8 @@
   data), and so does zedit now.
 - Fix: `$$` in a `$GENERATE` line was read as two counters (`cost$$` gave
   `cost11`); as in BIND, it is now a literal `$`.
+- Fix: a file saved with CRLF line ends couldn't be read (`$TTL 300` gave
+  "unknown unit"). CRLF is now read as LF, as BIND does.
 
 ## 1.3.0 - 2026-10-11
 

@@ -320,11 +320,12 @@ def check_cname(m: Records) -> None:
 
 def read_text(path: str) -> str:
     """A session file's text. Always UTF-8, whatever the locale, so that what
-    you type reads the same everywhere."""
+    you type reads the same everywhere. CRLF line ends, which an editor may
+    save, are read as LF, as BIND reads them."""
     with open(path, "rb") as f:
         data = f.read()
     try:
-        return data.decode("utf-8")
+        return data.decode("utf-8").replace("\r\n", "\n")
     except UnicodeDecodeError as e:
         line = data.count(b"\n", 0, e.start) + 1
         raise ValueError(

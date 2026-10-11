@@ -153,7 +153,8 @@ including answering no to `Send?`, zedit prints a `--resume` command. So does
 `--dry-run`: resume without `--dry-run` to send the same edit, rebased onto the
 zone as it is then.
 
-The files are UTF-8 and readable only by you, and the directory is created
+The files are UTF-8 (an editor may save them with CRLF line ends) and
+readable only by you, and the directory is created
 accessible only to you; zedit warns, but changes nothing, if its permissions
 have since been opened to others. The two files are replaced together: zedit
 writes the new pair as `FILE.new` and `FILE.base.new` first, so if writing is

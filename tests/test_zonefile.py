@@ -439,6 +439,18 @@ def test_session_files_are_utf8(tmp_path):
         zonefile.parse_file(str(f), ORIGIN, base_soa)
 
 
+def test_session_files_with_crlf_read_as_with_lf(tmp_path):
+    """An editor may save the file with CRLF line ends; it reads as the same
+    zone, not as a '\\r' after each line's last field (unknown unit in $TTL)."""
+    _, base_soa, _ = model("")
+    f = tmp_path / "s.zone"
+    body = "$TTL 300\n" + SOA + '@ NS ns1\nwww A 192.0.2.1\ntxt TXT ( "a"\n  "b" )\n'
+    f.write_bytes(body.encode())
+    lf = zonefile.parse_file(str(f), ORIGIN, base_soa)
+    f.write_bytes(body.replace("\n", "\r\n").encode())
+    assert zonefile.parse_file(str(f), ORIGIN, base_soa) == lf
+
+
 @pytest.mark.parametrize(
     "records",
     [
