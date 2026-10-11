@@ -244,9 +244,9 @@ def update_ops(
     server: Rfc2136Backend, origin: dns.name.Name, edit: ChangeSet
 ) -> tuple[list[Op], dns.rdataset.Rdataset | None, list[str]]:
     """-> (all steps of the UPDATE for the ChangeSet edit in order, SOA RRset sent
-    or None, conflicting SOA fields): prerequisites, deletes, adds, final deletes
-    (see compute_update()). The SOA is merged with the live zone at the moment
-    this is called."""
+    or None, conflicting SOA fields): prerequisites, deletes, adds, the SOA,
+    final deletes (see compute_update()). The SOA is merged with the live zone
+    at the moment this is called."""
     dels, adds, final = compute_update(edit, origin)
     # The SOA is merged with the server's current one, so ask only if it is sent
     live = live_soa(server, origin) if edit.soa_changed else None
