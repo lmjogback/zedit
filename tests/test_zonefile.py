@@ -179,6 +179,8 @@ def generated(line):
         ("${0,7,n}", 0x1A, "a.1.0.0"),  # width counts characters, dots included
         ("${0,0,N}", 0xFA, "A.F"),
         (r"x\$y$", 3, r"x\$y3"),  # escapes are left to the zone parser
+        ("a$$$b", 1, r"a\$1b"),  # $$ is a literal $, read left to right
+        ("c$${0,2}d", 1, r"c\${0,2}d"),
     ],
 )
 def test_generate_substitute_like_bind(template, i, expected):
@@ -265,6 +267,8 @@ def test_generate_matches_named_checkzone(tmp_path):
         "$GENERATE 1-3 w$ CNAME x\\$y$\n"
         "$GENERATE 250-254 n$ TXT ${0,5,n}-${0,0,N}-${-200,3,o}\n"
         'txt TXT ( "a"\n$GENERATE 1-2 foo A 192.0.2.$\n)\n'
+        '$GENERATE 1-2 cost$ TXT "cost$$"\n'
+        "$GENERATE 1-2 $$x$ TXT ${0,2}$$\n"
     )
     f = tmp_path / "z"
     f.write_text(zone)
@@ -281,7 +285,7 @@ def test_generate_matches_named_checkzone(tmp_path):
         if tname(t) != "NS"
         for rd in rds
     }
-    assert len(bind) == 19 and ours == bind
+    assert len(bind) == 23 and ours == bind
 
 
 @pytest.mark.parametrize(

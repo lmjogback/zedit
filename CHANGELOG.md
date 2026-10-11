@@ -12,6 +12,8 @@
 - Fix: a line starting with `$GENERATE` inside a record's parentheses was
   expanded as a directive. BIND reads it as part of the record (e.g. TXT
   data), and so does zedit now.
+- Fix: `$$` in a `$GENERATE` line was read as two counters (`cost$$` gave
+  `cost11`); as in BIND, it is now a literal `$`.
 
 ## 1.3.0 - 2026-10-11
 

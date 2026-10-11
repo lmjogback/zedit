@@ -162,8 +162,9 @@ class _StrictAdds:
 # line with '$' for the counter, e.g. $GENERATE 10-20 host$ A 192.0.2.$
 GENERATE_LINE = re.compile(r"^\$GENERATE[ \t]+(\S+)[ \t]+(\S.*)$", re.IGNORECASE)
 GENERATE_RANGE = re.compile(r"^(\d+)-(\d+)(?:/(\d+))?$")
-# In a template: an escaped character (left as it is), ${...} or a bare $
-GENERATE_TOKEN = re.compile(r"\\.|\$\{([^}]*)\}|\$")
+# In a template: an escaped character (left as it is), $$ (a literal $), ${...}
+# or a bare $
+GENERATE_TOKEN = re.compile(r"\\.|\$\$|\$\{([^}]*)\}|\$")
 GENERATE_MAX = 65536  # records per $GENERATE line, a guard against typos like 1-1000000
 
 
@@ -185,13 +186,17 @@ def nibbles(value: int, width: int, mode: str) -> str:
 
 def generate_substitute(template: str, i: int) -> str:
     """Expand '$', '${offset[,width[,base]]}' in a $GENERATE template, as BIND does.
-    Backslash escapes (e.g. '\\$' for a literal '$') are left for the zone parser."""
+    Backslash escapes (e.g. '\\$' for a literal '$') are left for the zone parser,
+    and '$$' becomes one, so that a '$' it gives at the start of a line isn't
+    read as a directive."""
 
     def repl(m: re.Match[str]) -> str:
         """One token of the template -> its text for counter value i."""
         token = m.group(0)
         if token.startswith("\\"):
             return token
+        if token == "$$":
+            return "\\$"
         if token == "$":
             return str(i)
         # ${offset[,width[,base]]}: base d, o, x or X as in printf, or n/N for nibbles
