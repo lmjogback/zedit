@@ -9,6 +9,9 @@
   rejected: the SOA change isn't sent, and an UPDATE whose answer isn't signed
   is reported as possibly not applied, with a rebase offered. The transfer
   already required signatures.
+- Fix: a line starting with `$GENERATE` inside a record's parentheses was
+  expanded as a directive. BIND reads it as part of the record (e.g. TXT
+  data), and so does zedit now.
 
 ## 1.3.0 - 2026-10-11
 

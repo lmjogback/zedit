@@ -219,9 +219,12 @@ def expand_generate(text: str) -> tuple[str, list[int]]:
     one modifier and silently leaves the rest as text).
     -> (expanded text, original line number for each line of the expanded text)."""
     out, linemap = [], []  # linemap[i]: the user's line for line i + 1 of out
+    depth = 0  # depth > 0: inside ( ... ), where a line is record data, not a directive
     for n, line in enumerate(text.split("\n"), 1):
+        comment, change = reverse.scan_line(line)
         # Without its comment, where a '$' is no modifier
-        m = GENERATE_LINE.match(line[: reverse.scan_line(line)[0]].rstrip())
+        m = GENERATE_LINE.match(line[:comment].rstrip()) if depth == 0 else None
+        depth = max(depth + change, 0)
         if not m:
             out.append(line)
             linemap.append(n)

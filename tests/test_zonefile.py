@@ -200,6 +200,22 @@ def test_generate_leaves_the_comment_alone():
     assert generated('$GENERATE 1-2 $ TXT "a;$" ; see ${docs}, $5') == ['1 TXT "a;1"', '2 TXT "a;2"']
 
 
+def test_generate_inside_parentheses_is_record_data():
+    """Inside ( ... ) a line continues the record, so a '$GENERATE' there is TXT
+    data, as BIND reads it, not a directive; one after the ')' is expanded."""
+    text = 'txt TXT ( "a" ; (\n$GENERATE 1-2 foo A 192.0.2.$\n")" )\n$GENERATE 1-2 h$ A 192.0.2.$\n'
+    expanded, linemap = zonefile.expand_generate(text)
+    assert expanded.split("\n") == [
+        'txt TXT ( "a" ; (',
+        "$GENERATE 1-2 foo A 192.0.2.$",
+        '")" )',
+        "h1 A 192.0.2.1",
+        "h2 A 192.0.2.2",
+        "",
+    ]
+    assert linemap == [1, 2, 3, 4, 4, 5]
+
+
 @pytest.mark.parametrize(
     "line, match",
     [
@@ -248,6 +264,7 @@ def test_generate_matches_named_checkzone(tmp_path):
         "$GENERATE 40-42 ${0,0,d} PTR h${0,4,X}-$.example.com.\n"
         "$GENERATE 1-3 w$ CNAME x\\$y$\n"
         "$GENERATE 250-254 n$ TXT ${0,5,n}-${0,0,N}-${-200,3,o}\n"
+        'txt TXT ( "a"\n$GENERATE 1-2 foo A 192.0.2.$\n)\n'
     )
     f = tmp_path / "z"
     f.write_text(zone)
@@ -264,7 +281,7 @@ def test_generate_matches_named_checkzone(tmp_path):
         if tname(t) != "NS"
         for rd in rds
     }
-    assert len(bind) == 18 and ours == bind
+    assert len(bind) == 19 and ours == bind
 
 
 @pytest.mark.parametrize(
