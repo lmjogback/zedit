@@ -204,12 +204,21 @@ def compute_prereqs(edit: ChangeSet, origin: dns.name.Name) -> list[Op]:
     return out
 
 
+def signed_as_asked(server: Rfc2136Backend, response: dns.message.Message) -> bool:
+    """Whether the response is signed if the request was. dnspython checks a
+    TSIG that is there but doesn't require one (except in a transfer), so an
+    unsigned, possibly forged answer would otherwise be taken as the server's
+    (RFC 8945 §5.4)."""
+    return response.had_tsig or not server.keyring
+
+
 def live_soa(
     server: Rfc2136Backend, origin: dns.name.Name, timeout: float | None = None
 ) -> dns.rdataset.Rdataset | None:
     """The zone's SOA RRset as the server answers it now, or None if the query
-    fails. With inline-signing it is the signed zone's SOA: its serial is normally
-    >= the unsigned one, and its other fields are the same.
+    fails or, with a key, the answer isn't signed. With inline-signing it is the
+    signed zone's SOA: its serial is normally >= the unsigned one, and its other
+    fields are the same.
 
     Names in it are made relative to the zone, as in the transferred zone (an
     RNAME such as hostmaster.example.com. becomes hostmaster), so that its fields
@@ -221,7 +230,7 @@ def live_soa(
             q.use_tsig(server.keyring, keyname=server.keyname)
         limit = SOA_QUERY_TIMEOUT if timeout is None else min(timeout, SOA_QUERY_TIMEOUT)
         r = dns.query.tcp(q, server.address, port=server.port, timeout=limit)
-        if r.rcode() != dns.rcode.NOERROR:
+        if r.rcode() != dns.rcode.NOERROR or not signed_as_asked(server, r):
             return None
         for rrset in r.answer:
             if rrset.name == origin and rrset.rdtype == dns.rdatatype.SOA:
@@ -322,6 +331,9 @@ def send_update(server: Rfc2136Backend, origin: dns.name.Name, ops: list[Op]) ->
     except (OSError, dns.exception.DNSException) as e:
         # e.g. connection refused, or a TSIG error (bad key, clock skew)
         return SendResult(Outcome.FAILED, f"UPDATE failed: {e}")
+    if not signed_as_asked(server, response):
+        message = f"the answer to the UPDATE was not signed with the key - {UNKNOWN_OUTCOME}"
+        return SendResult(Outcome.REBASE, message)
     rcode = response.rcode()
     if rcode == dns.rcode.NOERROR:
         return SendResult(Outcome.OK)

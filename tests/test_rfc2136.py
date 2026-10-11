@@ -197,6 +197,57 @@ def test_live_soa_takes_only_the_zones_soa_from_a_good_answer(monkeypatch, rcode
     assert rfc2136.live_soa(rfc2136.Rfc2136Backend("192.0.2.53", 53, "ns"), ORIGIN) is None
 
 
+KEYRING = rfc2136.dns.tsigkeyring.from_text({"admin": ("hmac-sha256", "c2VjcmV0c2VjcmV0c2VjcmV0")})
+KEYNAME = rfc2136.dns.name.from_text("admin")
+KEYED = rfc2136.Rfc2136Backend("192.0.2.53", 53, "ns", KEYRING, KEYNAME)
+
+
+def answer_over_wire(request, signed, answer=()):
+    """A NOERROR response with the RRsets answer, as dns.query.tcp() would
+    return it for the signed request: through the wire, the TSIG checked against
+    the request. signed False: the response carries no TSIG, as a forged one
+    would."""
+    request.to_wire()  # signs, setting the MAC the response is signed and checked with
+    response = rfc2136.dns.message.make_response(request)
+    response.answer.extend(answer)
+    if not signed:
+        response.tsig = None
+        response.keyring = None
+    return rfc2136.dns.message.from_wire(response.to_wire(), keyring=KEYRING, request_mac=request.mac)
+
+
+@pytest.mark.parametrize("signed", [True, False])
+def test_live_soa_with_a_key_needs_a_signed_answer(monkeypatch, signed):
+    """With a key, an unsigned answer is not taken as the zone's SOA: someone on
+    the path could forge one, and its fields would be merged into the SOA zedit
+    signs and sends (RFC 8945 §5.4)."""
+
+    def tcp(q, server, port, timeout):
+        soa = "ns1.example.com. evil.example.net. 105 7200 900 1209600 300"
+        return answer_over_wire(q, signed, [rfc2136.dns.rrset.from_text(ORIGIN, 3600, "IN", "SOA", soa)])
+
+    monkeypatch.setattr(rfc2136.dns.query, "tcp", tcp)
+    live = rfc2136.live_soa(KEYED, ORIGIN)
+    assert (live is not None) is signed
+
+
+@pytest.mark.parametrize("signed", [True, False])
+def test_send_update_with_a_key_needs_a_signed_answer(monkeypatch, signed):
+    """With a key, an unsigned NOERROR is not taken as success: it may be forged,
+    so whether the UPDATE was applied is unknown, and a rebase (a signed
+    transfer) finds out."""
+
+    def tcp(msg, server, port, timeout):
+        return answer_over_wire(msg, signed)
+
+    monkeypatch.setattr(rfc2136.dns.query, "tcp", tcp)
+    result = rfc2136.send_update(KEYED, ORIGIN, plan_ops())
+    if signed:
+        assert result.outcome is Outcome.OK
+    else:
+        assert result.outcome is Outcome.REBASE and "not signed with the key" in result.message
+
+
 def plan_ops():
     """Prerequisites, deletes and adds for a typical edit."""
     old, _, _ = model("www A 192.0.2.1\nwww A 192.0.2.2\ngone TXT x\n")

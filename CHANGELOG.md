@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Fix: with a TSIG key, an unsigned answer to the SOA query or the UPDATE was
+  accepted (dnspython checks a signature only if there is one). Someone on the
+  path could forge the SOA and get other SOA fields into the UPDATE that zedit
+  signs, or report a failed UPDATE as applied. An unsigned answer is now
+  rejected: the SOA change isn't sent, and an UPDATE whose answer isn't signed
+  is reported as possibly not applied, with a rebase offered. The transfer
+  already required signatures.
+
 ## 1.3.0 - 2026-10-11
 
 - An edited file with a record zedit can't send (a DNSSEC record, CDS or

@@ -9,8 +9,9 @@ zedit talks to one server, the zone's primary: the SOA MNAME, looked up with
 the system resolver, or the server given with `-s`. If the name has several
 addresses, zedit connects with Happy Eyeballs (RFC 8305) and uses the first
 address that accepts a TCP connection, so a broken IPv6 path quickly falls back
-to IPv4. The transfer and the UPDATE both use TCP and are signed with the TSIG
-key.
+to IPv4. The transfer, the SOA query and the UPDATE all use TCP and are signed
+with the TSIG key, and the server's answers must be signed with it too: an
+unsigned answer, which could be forged, is not used.
 
 ## Semantic diff
 
