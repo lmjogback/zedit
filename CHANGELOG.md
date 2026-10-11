@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The documentation is reorganized: README.md is a short introduction with a
+  getting-started guide; the details are in docs/editing.md,
+  docs/how-it-works.md and docs/server.md, and the notes for development in
+  CONTRIBUTING.md.
 - zedit no longer needs `nsupdate` (BIND's `bind9-dnsutils`): it sends the
   UPDATE itself with dnspython, signed with the same TSIG key it uses for the
   transfer. `--dry-run` and `[s]cript` still show the update as an `nsupdate`
