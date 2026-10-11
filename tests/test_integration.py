@@ -398,7 +398,7 @@ def test_serial_update_methods(tmp_path, method, signing):
     With inline-signing, the unixtime/date checks below pass only because the
     zone is loaded, and its signed serial set by the method, during the test:
     BIND applies the method to the signed zone's own serial changes, not to the
-    ones updates bring in from the unsigned zone (see README, "Serial numbers").
+    ones updates bring in from the unsigned zone (see docs/server.md, "DNSSEC-signed zones").
     An update on a later day would get the previous serial plus one."""
     with run_named(tmp_path, signing, method) as (port, key, tmp):
         s0, _ = soa(port, key)
@@ -607,7 +607,7 @@ def concurrent_soa(key, port, fields, mname="ns1.example.net.", ttl=3600):
     """Shell snippet: the server's SOA changed by someone else while editing.
     It waits until the server answers with the change: with inline-signing the
     signed zone, which answers queries, follows the unsigned one a moment later,
-    and zedit can only see the change once it is there (see README, "SOA")."""
+    and zedit can only see the change once it is there (see docs/how-it-works.md, "SOA changes")."""
     timers = " ".join(fields.split()[1:])  # REFRESH RETRY EXPIRE MINIMUM; the signed serial differs
     return nsupdate(
         key, port, f"update add example.com. {ttl} IN SOA {mname} hostmaster.example.net. {fields}"
