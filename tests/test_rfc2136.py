@@ -206,14 +206,17 @@ def answer_over_wire(request, signed, answer=()):
     """A NOERROR response with the RRsets answer, as dns.query.tcp() would
     return it for the signed request: through the wire, the TSIG checked against
     the request. signed False: the response carries no TSIG, as a forged one
-    would."""
+    would; "bad-mac": its MAC is changed in transit."""
     request.to_wire()  # signs, setting the MAC the response is signed and checked with
     response = rfc2136.dns.message.make_response(request)
     response.answer.extend(answer)
     if not signed:
         response.tsig = None
         response.keyring = None
-    return rfc2136.dns.message.from_wire(response.to_wire(), keyring=KEYRING, request_mac=request.mac)
+    wire = bytearray(response.to_wire())
+    if signed == "bad-mac":
+        wire[-7] ^= 1  # the MAC's last byte, before original ID, error and other length
+    return rfc2136.dns.message.from_wire(bytes(wire), keyring=KEYRING, request_mac=request.mac)
 
 
 @pytest.mark.parametrize("signed", [True, False])
@@ -231,21 +234,24 @@ def test_live_soa_with_a_key_needs_a_signed_answer(monkeypatch, signed):
     assert (live is not None) is signed
 
 
-@pytest.mark.parametrize("signed", [True, False])
-def test_send_update_with_a_key_needs_a_signed_answer(monkeypatch, signed):
-    """With a key, an unsigned NOERROR is not taken as success: it may be forged,
-    so whether the UPDATE was applied is unknown, and a rebase (a signed
-    transfer) finds out."""
+@pytest.mark.parametrize(
+    ("signed", "text"), [(True, None), (False, "not signed with the key"), ("bad-mac", "bad answer")]
+)
+def test_send_update_with_a_key_needs_a_signed_answer(monkeypatch, signed, text):
+    """With a key, an unsigned NOERROR, or one whose signature doesn't verify, is
+    not taken as success: it may be forged or damaged, and the server may or may
+    not have applied the UPDATE, so a rebase (a signed transfer) finds out."""
 
     def tcp(msg, server, port, timeout):
         return answer_over_wire(msg, signed)
 
     monkeypatch.setattr(rfc2136.dns.query, "tcp", tcp)
     result = rfc2136.send_update(KEYED, ORIGIN, plan_ops())
-    if signed:
+    if text is None:
         assert result.outcome is Outcome.OK
     else:
-        assert result.outcome is Outcome.REBASE and "not signed with the key" in result.message
+        assert result.outcome is Outcome.REBASE and text in result.message
+        assert "unknown whether the update was applied" in result.message
 
 
 def plan_ops():
@@ -327,12 +333,22 @@ def send_with(monkeypatch, outcome):
         (rfc2136.dns.exception.Timeout(), Outcome.REBASE, "unknown whether"),
         (EOFError(), Outcome.REBASE, "unknown whether"),
         (ConnectionRefusedError(111, "Connection refused"), Outcome.FAILED, "Connection refused"),
+        # The server rejected the TSIG and didn't apply the UPDATE
+        (rfc2136.dns.tsig.PeerBadSignature(), Outcome.FAILED, "UPDATE failed"),
+        (rfc2136.dns.tsig.PeerBadTime(), Outcome.FAILED, "UPDATE failed"),
+        # Nothing was sent
+        (rfc2136.dns.exception.TooBig(), Outcome.FAILED, "UPDATE failed"),
+        # An answer arrived but failed the local checks: it may have been applied
+        (rfc2136.dns.tsig.BadSignature(), Outcome.REBASE, "unknown whether"),
+        (rfc2136.dns.query.BadResponse(), Outcome.REBASE, "unknown whether"),
+        (rfc2136.dns.exception.FormError(), Outcome.REBASE, "unknown whether"),
     ],
 )
 def test_send_update_outcomes(monkeypatch, outcome, expected, text):
     """How each answer, or failure to get one, is reported. NXRRSET/YXRRSET (a
-    prerequisite failed) and a lost answer (it may or may not have been applied)
-    offer a rebase; a refusal or a TSIG error doesn't, as rebasing won't help."""
+    prerequisite failed) and a lost or bad answer (it may or may not have been
+    applied) offer a rebase; a refusal, or the server rejecting the TSIG,
+    doesn't, as rebasing won't help."""
     result = send_with(monkeypatch, outcome)
     assert result.outcome is expected and text in result.message
 

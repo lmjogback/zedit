@@ -9,6 +9,10 @@
   rejected: the SOA change isn't sent, and an UPDATE whose answer isn't signed
   is reported as possibly not applied, with a rebase offered. The transfer
   already required signatures.
+- Fix: an answer to the UPDATE whose TSIG signature didn't verify, or that was
+  otherwise malformed, was reported as a failure with no rebase, though the
+  server may have applied the update. It is now reported as possibly applied,
+  with a rebase offered. A server rejecting the TSIG is still a failure.
 - Fix: a line starting with `$GENERATE` inside a record's parentheses was
   expanded as a directive. BIND reads it as part of the record (e.g. TXT
   data), and so does zedit now.

@@ -11,7 +11,8 @@ addresses, zedit connects with Happy Eyeballs (RFC 8305) and uses the first
 address that accepts a TCP connection, so a broken IPv6 path quickly falls back
 to IPv4. The transfer, the SOA query and the UPDATE all use TCP and are signed
 with the TSIG key, and the server's answers must be signed with it too: an
-unsigned answer, which could be forged, is not used.
+unsigned answer, which could be forged, or one whose signature doesn't verify,
+is not used.
 
 ## Semantic diff
 
@@ -82,7 +83,9 @@ update was accepted before it starts verifying.
 
 ## Rebase
 
-On NXRRSET/YXRRSET (or a timeout) you can rebase. zedit does a new AXFR and
+On NXRRSET/YXRRSET, or when it is unknown whether the update was applied (a
+timeout, a lost connection, an answer that is unsigned or fails its checks),
+you can rebase. zedit does a new AXFR and
 merges per RRset:
 
 - changed only by you → yours

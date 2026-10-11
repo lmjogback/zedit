@@ -311,6 +311,19 @@ def update_message(
     return msg
 
 
+# Raised by dns.query.tcp() for an answer that arrived but failed the local
+# checks: a bad TSIG, a malformed message, or one that doesn't answer the request.
+# The server may still have applied the UPDATE. Not the Peer* TSIG errors: those
+# report that the server rejected the request without applying it (RFC 8945 §5.2)
+BAD_ANSWER = (
+    dns.tsig.BadSignature,
+    dns.tsig.BadTime,
+    dns.tsig.BadKey,
+    dns.tsig.BadAlgorithm,
+    dns.message.UnknownTSIGKey,
+    dns.exception.FormError,
+    dns.query.BadResponse,
+)
 UPDATE_TIMEOUT = 60  # seconds for the server's answer to the UPDATE
 # After a timeout or a dropped connection the server may or may not have applied
 # the UPDATE; rebasing finds out, since the prerequisites make it all or nothing
@@ -328,8 +341,10 @@ def send_update(server: Rfc2136Backend, origin: dns.name.Name, ops: list[Op]) ->
         return SendResult(Outcome.REBASE, f"UPDATE timed out - {UNKNOWN_OUTCOME}")
     except (EOFError, ConnectionResetError):
         return SendResult(Outcome.REBASE, f"connection closed during the UPDATE - {UNKNOWN_OUTCOME}")
+    except BAD_ANSWER as e:
+        return SendResult(Outcome.REBASE, f"bad answer to the UPDATE ({e}) - {UNKNOWN_OUTCOME}")
     except (OSError, dns.exception.DNSException) as e:
-        # e.g. connection refused, or a TSIG error (bad key, clock skew)
+        # e.g. connection refused, or the server rejected the TSIG (bad key, clock skew)
         return SendResult(Outcome.FAILED, f"UPDATE failed: {e}")
     if not signed_as_asked(server, response):
         message = f"the answer to the UPDATE was not signed with the key - {UNKNOWN_OUTCOME}"
