@@ -333,10 +333,33 @@ def test_cds_filtered_only_at_the_apex():
 
 def test_cds_at_the_apex_cannot_be_added():
     """Adding CDS at the apex in the file is an error, since the server owns it."""
-    with pytest.raises(ValueError, match="CDS/CDNSKEY at the apex"):
+    with pytest.raises(ValueError, match="line 3: @ CDS: the server maintains CDS records at the apex"):
         zonefile.parse_text("$TTL 300\n" + SOA + f"@ CDS {CDS_RDATA}\n", ORIGIN)
     m = zonefile.parse_text("$TTL 300\n" + SOA + f"_dsboot.child.example CDS {CDS_RDATA}\n", ORIGIN).records
     assert key("_dsboot.child.example", "CDS") in m
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        # A ;ro line from -a with its prefix removed
+        (
+            "www A 192.0.2.1\nwww RRSIG A 13 3 300 20261019040406 20261005123408 34319 @ eiIqZXhhbXBsZQ==\n",
+            "line 5: www RRSIG: the server maintains RRSIG records, so they can't be edited",
+        ),
+        ("@ NSEC3PARAM 1 0 0 -\n", "line 4: @ NSEC3PARAM: the server maintains NSEC3PARAM records,"),
+        (f"\n\n@ CDNSKEY {CDNSKEY_RDATA}\n", "line 6: @ CDNSKEY: the server maintains CDNSKEY records at"),
+        ("sub SOA ns1 hostmaster 1 2 3 4 5\n", "line 4: sub SOA: an SOA record belongs only at the"),
+        # The line in the user's file, not in the $GENERATE expansion
+        ("$GENERATE 1-3 h$ A 192.0.2.$\n@ NSEC3PARAM 1 0 0 -\n", "line 5: @ NSEC3PARAM"),
+    ],
+)
+def test_records_the_server_maintains_are_errors_on_their_line(body, match):
+    """A record zedit can't send, such as a DNSSEC record or a ;ro line whose
+    prefix was removed, is reported on its line, so it can be found in a large
+    zone."""
+    with pytest.raises(ValueError, match=match):
+        zonefile.parse_text("$TTL 3600\n" + SOA + "@ NS ns1\n" + body, ORIGIN)
 
 
 def test_apex_ns_cannot_all_be_removed(tmp_path):

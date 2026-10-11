@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- An edited file with a record zedit can't send (a DNSSEC record, CDS or
+  CDNSKEY at the apex, an SOA below the apex) is now reported on its line.
+  Before, the error named only the records, so in a large zone you had to
+  search for them, e.g. for a `;ro` line from `-a` whose prefix was removed.
 - The documentation is reorganized: README.md is a short introduction with a
   getting-started guide; the details are in docs/editing.md,
   docs/how-it-works.md and docs/server.md, and the notes for development in

@@ -6,9 +6,10 @@ an error points at the user's line:
   expand_generate()          $GENERATE lines -> the records they make
   reverse.rewrite_address_owners()  owners written as IP addresses -> names
   read_zone()                dnspython's zone file reader, with three fixes
-                             (_Reader, _Tokenizer, _StrictAdds)
-  parse_text(), parse_file() the checks zedit adds: no DNSSEC records, the
-                             locked SOA fields, the CNAME rule, an apex NS
+                             (_Reader, _Tokenizer, _StrictAdds); no records
+                             the server maintains
+  parse_text(), parse_file() the checks zedit adds: the locked SOA fields,
+                             the CNAME rule, an apex NS
 
 render_file() writes the session file: a header of comments, the SOA with an
 explanation of its fields, and the records, one line per record, aligned.
@@ -109,8 +110,10 @@ class _StrictAdds:
     """Wraps the transaction the zone file reader adds records to. dnspython merges
     records into RRsets silently: an RRset gets the lowest TTL of its lines, and
     a single-record type such as CNAME or SOA keeps only the last line. Both are
-    reported instead, with the line in the tokenizer's text (which must end with
-    a newline: the reader has read a record's end of line when it adds it)."""
+    reported instead, and so is a record zedit can't send (a type the server
+    maintains, an SOA below the apex), with the line in the tokenizer's text
+    (which must end with a newline: the reader has read a record's end of line
+    when it adds it)."""
 
     def __init__(self, txn: dns.transaction.Transaction, tok: dns.tokenizer.Tokenizer) -> None:
         self._txn, self._tok = txn, tok
@@ -125,10 +128,18 @@ class _StrictAdds:
         """Add one record, unless dnspython would merge it into its RRset in a
         way the user didn't write."""
         k = (name, rd.rdtype, rd.covers())
+        line = self._tok.where()[1] - 1  # the tokenizer is already past this line's newline
+        what = f"{name} {tname(rd.rdtype)}"
+        if rd.rdtype == SOA and name != dns.name.empty:
+            raise ValueError(f"line {line}: {what}: an SOA record belongs only at the zone's apex")
+        if is_filtered(name, rd.rdtype):
+            where = " at the apex" if rd.rdtype in FILTERED_AT_APEX else ""
+            raise ValueError(
+                f"line {line}: {what}: the server maintains {tname(rd.rdtype)} records{where},"
+                " so they can't be edited"
+            )
         if k in self._first:
             first_ttl, first_rd = self._first[k]
-            line = self._tok.where()[1] - 1  # the tokenizer is already past this line's newline
-            what = f"{name} {tname(rd.rdtype)}"
             if dns.rdatatype.is_singleton(rd.rdtype) and rd != first_rd:
                 raise ValueError(
                     f"line {line}: more than one {what} record; a {tname(rd.rdtype)} RRset holds only one"
@@ -276,9 +287,7 @@ def parse_text(text: str, origin: dns.name.Name) -> Zone:
     if outside:
         raise ValueError(f"names outside the zone {origin} (check $ORIGIN): {', '.join(outside)}")
     m, soa, rejected = to_model(z)
-    if rejected:
-        bad = ", ".join(sorted({f"{k.name} {tname(k.rdtype)}" for k in rejected}))
-        raise ValueError(f"records not allowed (DNSSEC, CDS/CDNSKEY at the apex, or SOA outside it): {bad}")
+    assert not rejected  # _StrictAdds reports each of them with its line
     if soa is None:
         raise ValueError("SOA missing - it may be edited but not removed")
     return Zone(m, soa)

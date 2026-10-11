@@ -50,8 +50,8 @@ not an error, it is simply ignored. `--no-rrsig` keeps the interesting ones
 (DNSKEY, CDS, CDNSKEY, NSEC3PARAM, TYPE65534) and drops the bulky ones.
 
 A record of one of these types written as an ordinary line, for instance a
-`;ro` line with the prefix removed, is an error: zedit names it and offers to
-open the file again. Only CDS and CDNSKEY below the apex are allowed, for
+`;ro` line with the prefix removed, is an error on that line, and zedit offers
+to open the file again. Only CDS and CDNSKEY below the apex are allowed, for
 [bootstrapping signals](signaling.md).
 
 ## RRsets
