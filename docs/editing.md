@@ -94,6 +94,10 @@ $GENERATE 20-29 $ PTR host$.example.com.
 $GENERATE 30-38/2 $ PTR dyn-${0,3,d}.example.com.
 ```
 
+The first record after `$GENERATE` lines must name its owner: BIND gives a
+record that omits it the owner before them, which zedit doesn't track, so it is
+an error rather than a record under the wrong name.
+
 The expansion is done by zedit, not dnspython, whose own `$GENERATE` handles
 only one modifier per side. A dynamic zone stores the generated records, not
 the `$GENERATE` line, so the next edit shows the individual records.

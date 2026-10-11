@@ -16,6 +16,9 @@
 - Fix: a line starting with `$GENERATE` inside a record's parentheses was
   expanded as a directive. BIND reads it as part of the record (e.g. TXT
   data), and so does zedit now.
+- Fix: a record after a `$GENERATE` line that omits its owner name got the
+  last generated owner (`host2`), where BIND gives it the owner of the record
+  before the `$GENERATE` line. It is now an error on its line: write the owner.
 - Fix: `$$` in a `$GENERATE` line was read as two counters (`cost$$` gave
   `cost11`); as in BIND, it is now a literal `$`.
 - Fix: a file saved with CRLF line ends couldn't be read (`$TTL 300` gave

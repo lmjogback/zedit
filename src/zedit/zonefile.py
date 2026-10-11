@@ -221,19 +221,29 @@ def generate_substitute(template: str, i: int) -> str:
 def expand_generate(text: str) -> tuple[str, list[int]]:
     """Replace $GENERATE lines with the records they generate, following BIND
     (several '$' and modifiers per side; dnspython's own expansion handles only
-    one modifier and silently leaves the rest as text).
+    one modifier and silently leaves the rest as text). The first record after
+    them must name its owner.
     -> (expanded text, original line number for each line of the expanded text)."""
     out, linemap = [], []  # linemap[i]: the user's line for line i + 1 of out
     depth = 0  # depth > 0: inside ( ... ), where a line is record data, not a directive
+    after_generate = False  # no record line since the last $GENERATE line
     for n, line in enumerate(text.split("\n"), 1):
         comment, change = reverse.scan_line(line)
         # Without its comment, where a '$' is no modifier
-        m = GENERATE_LINE.match(line[:comment].rstrip()) if depth == 0 else None
+        code = line[:comment].rstrip()
+        m = GENERATE_LINE.match(code) if depth == 0 else None
+        if after_generate and depth == 0 and code.strip() and not line.startswith("$"):
+            # BIND gives such a record the owner before the $GENERATE line, but
+            # once expanded it would get the last generated one
+            if line[0].isspace():
+                raise ValueError(f"line {n}: a record after $GENERATE must name its owner")
+            after_generate = False
         depth = max(depth + change, 0)
         if not m:
             out.append(line)
             linemap.append(n)
             continue
+        after_generate = True
         r = GENERATE_RANGE.match(m.group(1))
         if not r:
             raise ValueError(f"line {n}: bad $GENERATE range {m.group(1)!r} (start-stop[/step])")

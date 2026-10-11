@@ -233,6 +233,25 @@ def test_generate_errors(line, match):
         zonefile.expand_generate(line)
 
 
+@pytest.mark.parametrize(
+    "between",
+    ["", "\n; a comment\n$TTL 60\n", "$GENERATE 3-4 host$ A 192.0.2.$\n"],
+    ids=["directly", "after-comment-and-directive", "after-another-generate"],
+)
+def test_generate_next_record_must_name_its_owner(between):
+    """BIND gives a record that omits its owner after $GENERATE the owner before
+    it; once expanded, it would silently get the last generated one. So it is
+    an error, on its line, even past blank lines, comments, directives and more
+    $GENERATE lines."""
+    head = "$TTL 300\n" + SOA + 'anchor TXT "before"\n$GENERATE 1-2 host$ A 192.0.2.$\n' + between
+    line = head.count("\n") + 1
+    with pytest.raises(ValueError, match=f"^line {line}: a record after \\$GENERATE must name its owner"):
+        zonefile.parse_text(head + '       TXT "after"\n', ORIGIN)
+    # Named, it is an ordinary record, and a later line may omit it again
+    m = zonefile.parse_text(head + 'named TXT "after"\n       A 192.0.2.9\n', ORIGIN).records
+    assert key("named", "TXT") in m and key("named", "A") in m
+
+
 def test_generate_errors_point_at_the_users_line():
     """After expanding 50 records, an error on the next line is still reported
     on the user's line 4, not on line 53 of the expanded text."""
