@@ -40,18 +40,52 @@ uvx --from git+https://github.com/lmjogback/zedit zedit --help
 
 `pipx install git+https://github.com/lmjogback/zedit` works too.
 
-To try a change before it is released, add `@BRANCH` (or a tag or commit) to
-the URL. `--refresh` makes uv fetch the branch again instead of using a cached
-copy, and `--force` replaces an installed zedit:
+## Getting started
 
-```sh
-uvx --refresh --from git+https://github.com/lmjogback/zedit@BRANCH zedit --help
-uv tool install --force git+https://github.com/lmjogback/zedit@BRANCH
-# back to main
-uv tool install --force git+https://github.com/lmjogback/zedit
-```
+1. Create a TSIG key where zedit finds it by default:
 
-Until the release, `zedit --version` shows the previous version number.
+   ```sh
+   mkdir -p ~/.config/zedit && chmod 700 ~/.config/zedit
+   tsig-keygen -a hmac-sha256 admin > ~/.config/zedit/default.key
+   chmod 600 ~/.config/zedit/default.key
+   ```
+
+   Use a dedicated admin key, not the one your DHCP server uses for DDNS.
+
+2. Give the key the right to transfer and update the zone. With BIND, add the
+   key file's contents to `named.conf` and:
+
+   ```
+   zone "example.com" {
+       allow-transfer { key admin; };
+       update-policy { grant admin zonesub ANY; };
+   };
+   ```
+
+   [docs/server.md](docs/server.md) has the details, also for DNSSEC-signed
+   zones.
+
+3. Run `zedit example.com`. The zone opens in `$VISUAL` or `$EDITOR` as a zone
+   file. Edit it, save and quit, and zedit shows what you changed and asks:
+
+   - `y` sends the changes as one UPDATE and then checks that the server has
+     them.
+   - `N` sends nothing.
+   - `e` opens the file again.
+   - `s` shows the update as an `nsupdate` script.
+
+   If the server is not the zone's SOA MNAME, give it with `-s`.
+
+If you stop before the update is sent and verified, zedit keeps your edit and
+prints a `zedit --resume FILE` command to pick it up again. If someone else
+changed the same records meanwhile, zedit offers to rebase your edit onto the
+zone as it is now and shows you the result before sending anything; where your
+change and theirs conflict, it opens the editor with the conflicts marked.
+
+[docs/editing.md](docs/editing.md) describes what you can write in the file
+(`$GENERATE`, IP addresses as names in reverse zones, internationalized names,
+the SOA), and [docs/how-it-works.md](docs/how-it-works.md) what zedit sends
+and how it verifies and rebases.
 
 ## Usage
 
@@ -72,9 +106,6 @@ zedit [-s SERVER] [-p PORT] [-k KEYFILE] [-a] [--no-rrsig] [-A] [-n] [-r FILE] z
 | `-r`, `--resume FILE` | Resume a saved session (rebases onto the current zone) |
 
 When the server or key comes from a default, zedit prints which ones it uses.
-If the server name has several addresses, zedit connects with Happy Eyeballs
-(RFC 8305) and uses the first address that accepts a TCP connection, so a
-broken IPv6 path quickly falls back to IPv4.
 
 ### Default key
 
@@ -90,17 +121,15 @@ Without `-k`, the first of these that exists is used:
 If none exists, zedit runs without TSIG. zedit warns if the key file is readable by
 group or others. A key file must hold a single key.
 
-```sh
-mkdir -p ~/.config/zedit/keys && chmod 700 ~/.config/zedit
-tsig-keygen -a hmac-sha256 admin > ~/.config/zedit/default.key
-chmod 600 ~/.config/zedit/default.key
-```
-
 ## Exit status
 
-0 success (or nothing to do), 1 error or aborted edit,
-2 update rejected or aborted, 3 update accepted but not verified, 130 interrupted.
-
+| Status | |
+|---|---|
+| 0 | Sent and verified, or nothing to do |
+| 1 | Error, or the edit was aborted |
+| 2 | The update was rejected, or you didn't send it |
+| 3 | The server accepted the update, but it could not be verified |
+| 130 | Interrupted |
 
 ## Documentation
 
@@ -108,7 +137,8 @@ chmod 600 ~/.config/zedit/default.key
 - [docs/how-it-works.md](docs/how-it-works.md): what zedit sends, and how it verifies and rebases
 - [docs/server.md](docs/server.md): setting up the server
 - [docs/signaling.md](docs/signaling.md): DNSSEC bootstrapping signals (RFC 9615)
-- [CONTRIBUTING.md](CONTRIBUTING.md): development
+- [CONTRIBUTING.md](CONTRIBUTING.md): development, tests, and trying an unreleased branch
+- [CHANGELOG.md](CHANGELOG.md)
 
 ## License
 

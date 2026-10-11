@@ -1,5 +1,8 @@
 # Contributing
 
+How to work on zedit: setting up, testing, what to update along with a
+change, and how releases are made.
+
 ## Development
 
 ```sh
@@ -9,6 +12,21 @@ uv run pytest                 # integration tests need BIND (named, nsupdate, di
 uv run ruff check . && uv run ruff format .
 uv run mypy                   # type check src/
 ```
+
+## Trying an unreleased version
+
+To try a change before it is released, add `@BRANCH` (or a tag or commit) to
+the URL. `--refresh` makes uv fetch the branch again instead of using a cached
+copy, and `--force` replaces an installed zedit:
+
+```sh
+uvx --refresh --from git+https://github.com/lmjogback/zedit@BRANCH zedit --help
+uv tool install --force git+https://github.com/lmjogback/zedit@BRANCH
+# back to main
+uv tool install --force git+https://github.com/lmjogback/zedit
+```
+
+Until the release, `zedit --version` shows the previous version number.
 
 ## Tests
 
@@ -29,8 +47,11 @@ uv run mypy                   # type check src/
 ## When you change behaviour
 
 - Add a line under `## Unreleased` at the top of CHANGELOG.md.
-- Keep README.md in step: options table, exit statuses, "Behaviour" section;
-  and docs/signaling.md for anything about CDS/CDNSKEY or signals.
+- Keep the documentation in step: README.md for the options table, exit
+  statuses and getting started; docs/editing.md for what can be written in
+  the file; docs/how-it-works.md for what is sent, verification and rebase;
+  docs/server.md for server setup; docs/signaling.md for anything about
+  CDS/CDNSKEY or signals.
 - A new command-line option also goes into `resume_command()` in
   `src/zedit/session.py` and `CARRIED` in `tests/test_session.py` (if it
   should carry over to `--resume`), or into `NOT_CARRIED`; the tests fail
