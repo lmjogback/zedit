@@ -362,6 +362,38 @@ def test_records_the_server_maintains_are_errors_on_their_line(body, match):
         zonefile.parse_text("$TTL 3600\n" + SOA + "@ NS ns1\n" + body, ORIGIN)
 
 
+@pytest.mark.parametrize(
+    ("record", "match"),
+    [
+        ("www TYPE255 \\# 0", "line 4: www ANY: ANY is a meta type, not a type of record"),
+        ("www TYPE41 \\# 0", "line 4: www OPT: OPT is a meta type"),
+        ("new TYPE252 \\# 0", "line 4: new AXFR: AXFR is a meta type"),
+        ("www TYPE128 \\# 0", "line 4: www TYPE128: TYPE128 is a meta type"),
+    ],
+)
+def test_meta_types_are_errors_on_their_line(record, match):
+    """dnspython reads a meta type in the generic form (RFC 3597) as a record;
+    sent in an UPDATE, the server would reject it only then, with FORMERR."""
+    with pytest.raises(ValueError, match=match):
+        zonefile.parse_text("$TTL 3600\n" + SOA + "@ NS ns1\n" + record + "\n", ORIGIN)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "www CERT PGP 0 0 AQIDBA==",
+        "www HTTPS 1 . alpn=h3,h2",
+        "_svc SVCB 1 svc alpn=h2 port=8443",
+        "www TYPE65280 \\# 4 0A000001",  # private use, in the generic form
+    ],
+)
+def test_record_types_without_special_handling_can_be_edited(record):
+    """zedit has no list of record types: any that dnspython can read, or any
+    in the generic form, is an ordinary record."""
+    m = zonefile.parse_text("$TTL 3600\n" + SOA + "@ NS ns1\n" + record + "\n", ORIGIN).records
+    assert len(m) == 2
+
+
 def test_apex_ns_cannot_all_be_removed(tmp_path):
     """A zone needs an NS record at its apex; BIND would silently ignore
     deleting the last one, so it is an error here."""

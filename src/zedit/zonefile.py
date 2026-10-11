@@ -7,7 +7,7 @@ an error points at the user's line:
   reverse.rewrite_address_owners()  owners written as IP addresses -> names
   read_zone()                dnspython's zone file reader, with three fixes
                              (_Reader, _Tokenizer, _StrictAdds); no records
-                             the server maintains
+                             the server maintains, no meta types
   parse_text(), parse_file() the checks zedit adds: the locked SOA fields,
                              the CNAME rule, an apex NS
 
@@ -111,7 +111,8 @@ class _StrictAdds:
     records into RRsets silently: an RRset gets the lowest TTL of its lines, and
     a single-record type such as CNAME or SOA keeps only the last line. Both are
     reported instead, and so is a record zedit can't send (a type the server
-    maintains, an SOA below the apex), with the line in the tokenizer's text
+    maintains, a meta type such as ANY or OPT, an SOA below the apex), with the
+    line in the tokenizer's text
     (which must end with a newline: the reader has read a record's end of line
     when it adds it)."""
 
@@ -130,6 +131,9 @@ class _StrictAdds:
         k = (name, rd.rdtype, rd.covers())
         line = self._tok.where()[1] - 1  # the tokenizer is already past this line's newline
         what = f"{name} {tname(rd.rdtype)}"
+        if dns.rdatatype.is_metatype(rd.rdtype):
+            # Written in the generic form (TYPE255 \# 0); a server rejects it (FORMERR)
+            raise ValueError(f"line {line}: {what}: {tname(rd.rdtype)} is a meta type, not a type of record")
         if rd.rdtype == SOA and name != dns.name.empty:
             raise ValueError(f"line {line}: {what}: an SOA record belongs only at the zone's apex")
         if is_filtered(name, rd.rdtype):

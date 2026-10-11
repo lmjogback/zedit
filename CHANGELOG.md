@@ -6,6 +6,9 @@
   CDNSKEY at the apex, an SOA below the apex) is now reported on its line.
   Before, the error named only the records, so in a large zone you had to
   search for them, e.g. for a `;ro` line from `-a` whose prefix was removed.
+- Fix: a meta type such as ANY, OPT or AXFR written in the generic form
+  (`www TYPE255 \# 0`) was sent in the UPDATE, and the server rejected it with
+  FORMERR. It is now an error on its line.
 - The documentation is reorganized: README.md is a short introduction with a
   getting-started guide; the details are in docs/editing.md,
   docs/how-it-works.md and docs/server.md, and the notes for development in

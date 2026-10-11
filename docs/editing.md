@@ -54,6 +54,20 @@ A record of one of these types written as an ordinary line, for instance a
 to open the file again. Only CDS and CDNSKEY below the apex are allowed, for
 [bootstrapping signals](signaling.md).
 
+## Record types
+
+Any record type dnspython knows can be written by name, e.g. CERT, SVCB or
+HTTPS; zedit has no list of its own. A type it doesn't know, a newer one or a
+private one, can be written in the generic form of RFC 3597:
+
+```
+www   300 IN TYPE65280 \# 4 0A000001
+```
+
+A record of such a type that is already in the zone is shown in this form.
+Meta types such as ANY, OPT or AXFR are not records, and are an error on their
+line, as is a misspelt type name.
+
 ## RRsets
 
 All records of an RRset must have the same TTL, and a single-record type such
