@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 - 2026-10-11
 
 - An edited file with a record zedit can't send (a DNSSEC record, CDS or
   CDNSKEY at the apex, an SOA below the apex) is now reported on its line.
