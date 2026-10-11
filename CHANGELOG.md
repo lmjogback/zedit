@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.1 - 2026-10-11
 
 - Fix: with a TSIG key, an unsigned answer to the SOA query or the UPDATE was
   accepted (dnspython checks a signature only if there is one). Someone on the
