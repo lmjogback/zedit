@@ -1,7 +1,9 @@
 # CLAUDE.md
 
 The instructions for coding agents are in AGENTS.md, which other tools read
-too. Claude Code reads this file, and the line below imports AGENTS.md into it,
-so edit AGENTS.md, not this file.
+too, and the notes for all contributors in CONTRIBUTING.md, which AGENTS.md
+points to. Claude Code reads this file, and the lines below import both into
+it, so edit those files, not this one.
 
 @AGENTS.md
+@CONTRIBUTING.md
