@@ -14,10 +14,10 @@ lists what the code doesn't tell you.
 - To test with the oldest allowed dependency versions, as CI's `lowest` job
   does, run the unit tests with
   `uv run --isolated --python 3.10 --resolution lowest-direct pytest tests --ignore tests/test_integration.py`.
-- Unit tests are in `tests/test_MODULE.py`, one file per module of
-  `src/zedit`; helpers they share are in `tests/helpers.py`.
   Without `--isolated` it rewrites `uv.lock` and downgrades `.venv`; if that
   happened, `git restore uv.lock && uv sync --locked` puts both back.
+- Unit tests are in `tests/test_MODULE.py`, one file per module of
+  `src/zedit`; helpers they share are in `tests/helpers.py`.
 
 ## When you change behaviour
 
