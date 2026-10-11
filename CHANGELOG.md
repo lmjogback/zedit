@@ -67,7 +67,7 @@
   since the last transfer (checked with an SOA query), instead of up to ten
   full transfers when a change doesn't show up, which was heavy for large
   zones. The last retry no longer ends with a needless wait.
-- README: zedit is tested with BIND 9.18 and 9.20, not 9.20 only.
+- docs/server.md: zedit is tested with BIND 9.18 and 9.20, not 9.20 only.
 - The file you edit is always read and written as UTF-8, whatever the locale.
   Before, non-ASCII text (say in a TXT record) was read with the locale's
   encoding. A file saved in another encoding is now reported with its line.
@@ -82,7 +82,7 @@
   such as a pasted typographic dash or a domain not written as an A-label
   (`xn--`). These records must be ASCII, and the `\DDD` escapes they are
   shown with are easy to miss.
-- README: sign a dynamic zone in place (`inline-signing no`); with
+- docs/server.md: sign a dynamic zone in place (`inline-signing no`); with
   inline-signing, BIND's `serial-update-method` doesn't apply to updates.
 - Fix: a line break in the SOA RNAME (`\010` in its first label) went
   unescaped into the "contact:" comment, so the rest of the label became a line
